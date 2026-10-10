@@ -1,0 +1,141 @@
+package zhiqiu.codeeditor
+
+/** 搜索选项：区分大小写 / 全词匹配 / 正则表达式 */
+enum class SearchOption {
+    CASE,
+    WHOLE_WORD,
+    REGEX,
+}
+
+sealed interface NativeEditorEvent {
+    data class ContentChanged(
+        val newText: String,
+    ) : NativeEditorEvent
+
+    data class LineContentChanged(
+        val lineIndex: Int,
+        val newLineText: String,
+    ) : NativeEditorEvent
+
+    /**
+     * 整块同步推送：在对侧 [targetStart] 处替换 [replaceCount] 行（0 表示仅插入），
+     * 写入 [newLines]。一次事件完成整块推送，仅触发一次高亮重建（NFR-001）。
+     */
+    data class SyncBlock(
+        val targetStart: Int,
+        val replaceCount: Int,
+        val newLines: List<String>,
+    ) : NativeEditorEvent
+
+    data class CursorMoved(
+        val line: Int,
+        val column: Int,
+    ) : NativeEditorEvent
+
+    data class EnterPressed(
+        val line: Int,
+        val column: Int,
+    ) : NativeEditorEvent
+
+    data class LanguageChanged(
+        val language: EditorLanguage,
+    ) : NativeEditorEvent
+
+    data class SearchQueryChanged(
+        val query: String,
+    ) : NativeEditorEvent
+
+    data object ToggleWordWrap : NativeEditorEvent
+
+    data object Undo : NativeEditorEvent
+
+    data object Redo : NativeEditorEvent
+
+    data class LoadFile(
+        val path: String,
+    ) : NativeEditorEvent
+
+    data class FontSizeChanged(
+        val size: Int,
+    ) : NativeEditorEvent
+
+    data class TabSizeChanged(
+        val size: Int,
+    ) : NativeEditorEvent
+
+    data class SelectionStarted(
+        val line: Int,
+        val col: Int,
+    ) : NativeEditorEvent
+
+    data class SelectionUpdated(
+        val line: Int,
+        val col: Int,
+    ) : NativeEditorEvent
+
+    data class SelectWord(
+        val line: Int,
+        val col: Int,
+    ) : NativeEditorEvent
+
+    data class SelectionHandleDragged(
+        val anchorLine: Int,
+        val anchorCol: Int,
+        val dragLine: Int,
+        val dragCol: Int,
+    ) : NativeEditorEvent
+
+    data object SelectionCleared : NativeEditorEvent
+
+    data object SelectAll : NativeEditorEvent
+
+    data class SelectLine(
+        val line: Int,
+    ) : NativeEditorEvent
+
+    data object ToggleReadOnly : NativeEditorEvent
+
+    /** 将当前编辑的文本 XML 回编译为二进制并写回来源 APK（仅当文件来自 APK 内时使用） */
+    data object Recompile : NativeEditorEvent
+
+    // ---- 搜索 / 替换 ----
+    data object OpenSearch : NativeEditorEvent
+    data object CloseSearch : NativeEditorEvent
+    data object ToggleReplace : NativeEditorEvent
+    data class ReplaceQueryChanged(val query: String) : NativeEditorEvent
+    data object SearchNext : NativeEditorEvent
+    data object SearchPrev : NativeEditorEvent
+    data object ReplaceNext : NativeEditorEvent
+    data object ReplaceAll : NativeEditorEvent
+    data class SearchOptionToggled(val option: SearchOption) : NativeEditorEvent
+
+    // ---- 跳转行 ----
+    data class GoToLine(val line: Int) : NativeEditorEvent
+
+    data object DismissError : NativeEditorEvent
+
+    data object Save : NativeEditorEvent
+
+    /** 改名：仅更新显示用的文件名（便签态无 filePath 时只改标题） */
+    data class RenameFile(val name: String) : NativeEditorEvent
+
+    /** 另存为：将内容写入指定路径并回写 filePath/fileName */
+    data class SaveAs(val path: String) : NativeEditorEvent
+
+    data object CutSelection : NativeEditorEvent
+
+    data object CutCurrentLine : NativeEditorEvent
+
+    data class PasteSelection(
+        val text: String,
+    ) : NativeEditorEvent
+
+    /** 确认加载大文件 */
+    data object ConfirmLoadLargeFile : NativeEditorEvent
+
+    /** 取消加载大文件 */
+    data object CancelLoadLargeFile : NativeEditorEvent
+
+    /** 切换某一起始行的折叠状态（VS Code gutter chevron） */
+    data class ToggleFold(val startLine: Int) : NativeEditorEvent
+}

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="close">Close</string>
+    <string name="editor_go_to_line">Go to Line</string>
+    <string name="editor_goto_line_hint">Enter line number (1-%1$d)</string>
+    <string name="editor_chars">%1$d chars</string>
+    <string name="editor_read_only">READ ONLY</string>
+    <string name="editor_translate">Translate</string>
+    <string name="editor_search_hint">Find</string>
+    <string name="editor_replace_hint">Replace</string>
+    <string name="editor_no_results">No results</string>
+    <string name="editor_match_case">Match Case</string>
+    <string name="editor_whole_word">Match Whole Word</string>
+    <string name="editor_regex">Use Regular Expression</string>
+    <string name="editor_regex_invalid">Invalid regex</string>
+    <string name="editor_option_on">%1$s: ON</string>
+    <string name="editor_option_off">%1$s: OFF</string>
+    <string name="translate_title">Translate</string>
+</resources>

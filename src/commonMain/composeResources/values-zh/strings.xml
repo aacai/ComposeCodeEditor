@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="close">关闭</string>
+    <string name="editor_go_to_line">跳转到行</string>
+    <string name="editor_goto_line_hint">请输入行号（1-%1$d）</string>
+    <string name="editor_chars">%1$d 个字符</string>
+    <string name="editor_read_only">只读</string>
+    <string name="editor_translate">翻译</string>
+    <string name="editor_search_hint">查找</string>
+    <string name="editor_replace_hint">替换</string>
+    <string name="editor_no_results">无结果</string>
+    <string name="editor_match_case">区分大小写</string>
+    <string name="editor_whole_word">全字匹配</string>
+    <string name="editor_regex">使用正则表达式</string>
+    <string name="editor_regex_invalid">正则表达式无效</string>
+    <string name="editor_option_on">%1$s：开</string>
+    <string name="editor_option_off">%1$s：关</string>
+    <string name="translate_title">翻译</string>
+</resources>
