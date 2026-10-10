@@ -31,7 +31,6 @@ enum class PerformanceMode {
     FULL {
         override val enableSyntaxHighlight: Boolean = true
         override val enableCodeFolding: Boolean = true
-        override val enableLineNumbers: Boolean = true
         override val enableSearch: Boolean = true
         override val maxHighlightLines: Int = Int.MAX_VALUE
         override val chunkSize: Int = Int.MAX_VALUE
@@ -46,7 +45,6 @@ enum class PerformanceMode {
     PERFORMANCE {
         override val enableSyntaxHighlight: Boolean = true
         override val enableCodeFolding: Boolean = false
-        override val enableLineNumbers: Boolean = true
         override val enableSearch: Boolean = true
         override val maxHighlightLines: Int = 5000
         override val chunkSize: Int = 1000
@@ -61,7 +59,6 @@ enum class PerformanceMode {
     MINIMAL {
         override val enableSyntaxHighlight: Boolean = false
         override val enableCodeFolding: Boolean = false
-        override val enableLineNumbers: Boolean = true
         override val enableSearch: Boolean = false
         override val maxHighlightLines: Int = 0
         override val chunkSize: Int = 500
@@ -72,9 +69,6 @@ enum class PerformanceMode {
 
     /** 是否启用代码折叠 */
     abstract val enableCodeFolding: Boolean
-
-    /** 是否显示行号 */
-    abstract val enableLineNumbers: Boolean
 
     /** 是否启用搜索功能 */
     abstract val enableSearch: Boolean

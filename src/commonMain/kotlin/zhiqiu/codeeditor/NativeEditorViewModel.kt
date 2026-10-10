@@ -126,6 +126,14 @@ class NativeEditorViewModel(
     }
 
     private fun dispatchEvent(event: NativeEditorEvent) {
+        // 降级模式（MINIMAL）整体停用搜索：在大文件入口拦下，免得面板打开后再全文扫一遍。
+        // CloseSearch 不在受限集合里，Esc 任何时候都能收起已打开的面板。
+        if (event.isSearchEvent() && !_state.value.performanceMode.enableSearch) {
+            if (event is NativeEditorEvent.OpenSearch) {
+                _uiEvents.tryEmit("文件过大，已禁用搜索")
+            }
+            return
+        }
         when (event) {
             is NativeEditorEvent.ContentChanged -> {
                 handleContentChanged(event.newText)
@@ -289,6 +297,18 @@ class NativeEditorViewModel(
             is NativeEditorEvent.ToggleFold -> handleToggleFold(event.startLine)
         }
     }
+
+    /** 属于「搜索/替换」语义的事件集合，性能降级时整体受限。 */
+    private fun NativeEditorEvent.isSearchEvent(): Boolean =
+        this is NativeEditorEvent.OpenSearch ||
+            this is NativeEditorEvent.SearchQueryChanged ||
+            this is NativeEditorEvent.SearchNext ||
+            this is NativeEditorEvent.SearchPrev ||
+            this is NativeEditorEvent.ToggleReplace ||
+            this is NativeEditorEvent.ReplaceQueryChanged ||
+            this is NativeEditorEvent.ReplaceNext ||
+            this is NativeEditorEvent.ReplaceAll ||
+            this is NativeEditorEvent.SearchOptionToggled
 
     /**
      * 判断当前内容是否相对基线（已加载 / 已保存）发生改动。
@@ -1141,7 +1161,8 @@ class NativeEditorViewModel(
             // 高亮器就位后先占位，立即显示文本（无高亮），再后台渐进上色，
             // 避免大文件一次性 tokenize 阻塞首屏
             highlighter = createSyntaxHighlighter(language)
-            highlightCache = HighlightCache(highlighter, lineCount)
+            highlightCache =
+                HighlightCache(highlighter, lineCount, maxLines = performanceMode.maxHighlightLines)
             val lines = newContent.getLines()
             highlightCache.prefill(lines)
             syncCursorNow(0, 0)
@@ -1695,7 +1716,14 @@ class NativeEditorViewModel(
                     previous?.cancelAndJoin()
                     if (!isActive) return@launch
                     val expectedGen = highlightCache.generation
-                    val total = lines.size
+                    // 后台整篇 tokenize 恰是大文件最贵的一步：按模式的上限截断，MINIMAL 干脆不跑
+                    val mode = _state.value.performanceMode
+                    val total =
+                        if (mode.enableSyntaxHighlight) {
+                            minOf(lines.size, mode.maxHighlightLines)
+                        } else {
+                            0
+                        }
                     var from = 0
                     // 单线程分块：块偏小以缩短每次占用主线程的时长，靠帧间 yield 累进上色
                     val chunk = 600
@@ -1740,7 +1768,8 @@ class NativeEditorViewModel(
                 runCatching { LargeFileStrategy.getPerformanceMode(fileSize, lineCount) }
                     .getOrDefault(PerformanceMode.FULL)
             highlighter = createSyntaxHighlighter(language)
-            highlightCache = HighlightCache(highlighter, lineCount)
+            highlightCache =
+                HighlightCache(highlighter, lineCount, maxLines = performanceMode.maxHighlightLines)
             val lines = newContent.getLines()
             highlightCache.prefill(lines)
             syncCursorNow(0, 0)

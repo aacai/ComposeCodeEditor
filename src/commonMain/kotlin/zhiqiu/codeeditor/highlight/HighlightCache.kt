@@ -9,12 +9,16 @@ import zhiqiu.codeeditor.render.tokenToColor
 
 /**
  * 行级高亮缓存，避免每次重组都全文重新 tokenize。
+ *
+ * [maxLines] 是大文件降级用的行数上限（见 `PerformanceMode.maxHighlightLines`）：
+ * 超出上限的行不会被 tokenize，[getTokens] 恒返回空列表，渲染端因此走纯文本路径。
  */
 @Stable
 class HighlightCache(
     private var highlighter: SyntaxHighlighter,
     lineCount: Int = 0,
     maxCacheSize: Int = if (lineCount > 0) calculateOptimalCacheSize(lineCount) else DEFAULT_MAX_CACHE_SIZE,
+    private val maxLines: Int = Int.MAX_VALUE,
 ) {
     private val maxCacheSize = maxCacheSize
     private val lruTokens = object : LinkedHashMap<Int, List<Token>>(16, 0.75f, true) {
@@ -80,6 +84,14 @@ class HighlightCache(
         lineStates.clear()
         var prevState: HighlightState? = highlighter.initial()
         for ((index, line) in lines.withIndex()) {
+            if (index >= maxLines) {
+                // 上限之外只延续状态、不产 token：为永不展示的行付费毫无收益
+                lruTokens[index] = emptyList()
+                lruStates[index] = prevState
+                sortedLineTokens.add(emptyList())
+                lineStates.add(prevState)
+                continue
+            }
             val (tokens, newState) = safeTokenize(line, prevState)
             val sorted = tokens.sortedBy { it.start }
             lruTokens[index] = sorted
@@ -113,10 +125,11 @@ class HighlightCache(
             rebuild(lines)
             return
         }
+        if (index >= maxLines) return
         var prevState: HighlightState? =
             if (index > 0) lineStates.getOrNull(index - 1) else highlighter.initial()
         var i = index
-        while (i < lines.size && i - index <= maxPropagate) {
+        while (i < lines.size && i < maxLines && i - index <= maxPropagate) {
             if (i >= sortedLineTokens.size) break
             val oldState = lineStates.getOrNull(i)
             val (tokens, newState) = safeTokenize(lines[i], prevState)
@@ -154,7 +167,8 @@ class HighlightCache(
         expectedGen: Int,
     ): Int? {
         if (fromIndex !in lines.indices) return null
-        val end = toIndex.coerceAtMost(lines.size)
+        val end = minOf(toIndex, lines.size, maxLines)
+        if (fromIndex >= end) return fromIndex
         var prevState: HighlightState? =
             if (fromIndex > 0) getState(fromIndex - 1) else highlighter.initial()
         var i = fromIndex
@@ -181,7 +195,8 @@ class HighlightCache(
         visibleEnd = endLine
 
         if (startLine !in lines.indices) return null
-        val end = endLine.coerceAtMost(lines.size)
+        val end = minOf(endLine, lines.size, maxLines)
+        if (startLine >= end) return startLine
 
         var prevState: HighlightState? =
             if (startLine > 0) getState(startLine - 1) else highlighter.initial()

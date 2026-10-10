@@ -16,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import zhiqiu.codeeditor.SearchMatch
+import zhiqiu.codeeditor.buffer.PerformanceMode
 import zhiqiu.codeeditor.highlight.TokenType
 import zhiqiu.codeeditor.text.LineSeparator
 import zhiqiu.codeeditor.text.SelectionRange
@@ -1392,5 +1393,110 @@ class NativeEditorViewModelTest {
             collect.cancel()
 
             assertTrue(notices.isNotEmpty(), "不支持格式化时要有可读提示")
+        }
+
+    // ==================== 性能降级（PerformanceMode）====================
+
+    private fun kotlinLines(count: Int) =
+        (0 until count).joinToString("\n") { "val v$it = 1" }
+
+    @Test
+    fun mediumDocumentDegradesToPerformanceModeAndCapsHighlightLines() =
+        runTest {
+            // 1.2 万行、体积不足 1MB：行数已越过 SMALL_LINE_THRESHOLD，进入 PERFORMANCE
+            viewModel.loadContent(kotlinLines(12_000), "big.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+
+            assertEquals(PerformanceMode.PERFORMANCE, viewModel.state.value.performanceMode)
+            assertTrue(viewModel.highlightCache.getTokens(0).isNotEmpty())
+            assertTrue(
+                viewModel.highlightCache.getTokens(4_999).isNotEmpty(),
+                "上限内的行应被后台高亮",
+            )
+            assertTrue(
+                viewModel.highlightCache.getTokens(5_000).isEmpty(),
+                "后台高亮止步于 maxHighlightLines",
+            )
+        }
+
+    @Test
+    fun hugeDocumentDegradesToMinimalMode() =
+        runTest {
+            viewModel.loadContent(kotlinLines(50_001), "huge.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+
+            assertEquals(PerformanceMode.MINIMAL, viewModel.state.value.performanceMode)
+            // MINIMAL 既关掉语法高亮，也不该排后台整篇 tokenize
+            assertFalse(viewModel.state.value.performanceMode.enableSyntaxHighlight)
+            assertTrue(viewModel.highlightCache.getTokens(0).isEmpty())
+        }
+
+    @Test
+    fun minimalModeRefusesToOpenSearchAndTellsWhy() =
+        runTest {
+            viewModel.loadContent(kotlinLines(50_001), "huge.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+
+            val notices = mutableListOf<String>()
+            val collect = launch { viewModel.uiEvents.collect { notices.add(it) } }
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.OpenSearch)
+            advanceUntilIdle()
+            collect.cancel()
+
+            assertFalse(viewModel.state.value.isSearchOpen, "降级模式不应打开搜索面板")
+            assertTrue(notices.isNotEmpty(), "被拒时要有可读提示，不能静默无反应")
+        }
+
+    @Test
+    fun minimalModeIgnoresSearchAndReplaceEvents() =
+        runTest {
+            viewModel.loadContent(kotlinLines(50_001), "huge.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.SearchQueryChanged("v1"))
+            viewModel.onEvent(NativeEditorEvent.ReplaceQueryChanged("x"))
+            viewModel.onEvent(NativeEditorEvent.ToggleReplace)
+            viewModel.onEvent(NativeEditorEvent.SearchOptionToggled(SearchOption.CASE))
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals("", state.searchQuery)
+            assertEquals("", state.replaceQuery)
+            assertTrue(state.searchMatches.isEmpty())
+            assertFalse(state.isReplaceExpanded)
+            assertFalse(state.isCaseSensitive, "搜索选项也不应被改动")
+        }
+
+    @Test
+    fun minimalModeReplaceEventsCannotMutateDocument() =
+        runTest {
+            viewModel.loadContent(kotlinLines(50_001) + "\nval target = 1", "huge.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+
+            val before = viewModel.getText()
+            viewModel.onEvent(NativeEditorEvent.ReplaceAll)
+            viewModel.onEvent(NativeEditorEvent.ReplaceNext)
+            advanceUntilIdle()
+
+            assertEquals(before, viewModel.getText(), "降级模式下不得改文档")
+            assertFalse(viewModel.state.value.isModified)
+        }
+
+    @Test
+    fun fullModeKeepsSearchWorking() =
+        runTest {
+            // 对照组：同一批事件在小文件上必须照常生效，证明受限来自模式而非接线错误
+            viewModel.loadContent("val a = 1\nval b = 2", "small.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+            assertEquals(PerformanceMode.FULL, viewModel.state.value.performanceMode)
+
+            viewModel.onEvent(NativeEditorEvent.OpenSearch)
+            viewModel.onEvent(NativeEditorEvent.SearchQueryChanged("val"))
+            advanceUntilIdle()
+
+            assertTrue(viewModel.state.value.isSearchOpen)
+            assertEquals(2, viewModel.state.value.searchMatches.size)
         }
 }
