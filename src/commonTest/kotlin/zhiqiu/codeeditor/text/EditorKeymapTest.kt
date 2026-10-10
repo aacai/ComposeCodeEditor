@@ -76,4 +76,12 @@ class EditorKeymapTest {
         assertNull(map(Key.Tab, shift = true, ctrl = true))
         assertNull(map(Key.Tab, shift = true, alt = true))
     }
+
+    @Test
+    fun shiftAltFFormats() {
+        assertEquals(EditorShortcut.Format, map(Key.F, shift = true, alt = true))
+        // 少了任一个修饰键就落回普通输入，Ctrl 组合仍归搜索
+        assertNull(map(Key.F, shift = true, alt = true, ctrl = true))
+        assertNull(map(Key.F, alt = true))
+    }
 }

@@ -71,6 +71,9 @@ sealed interface NativeEditorEvent {
         val separator: LineSeparator,
     ) : NativeEditorEvent
 
+    /** 按当前语言格式化整篇文档（JSON/XML，见 DocumentFormatter）。 */
+    data object FormatDocument : NativeEditorEvent
+
     /** 当前行左移一级缩进（物理键盘 Shift+Tab）。 */
     data object OutdentCurrentLine : NativeEditorEvent
 
@@ -169,5 +172,6 @@ fun EditorShortcut.toEditorEvent(): NativeEditorEvent? =
         EditorShortcut.SelectAll -> NativeEditorEvent.SelectAll
         EditorShortcut.Outdent -> NativeEditorEvent.OutdentCurrentLine
         EditorShortcut.Close -> NativeEditorEvent.DismissOverlay
+        EditorShortcut.Format -> NativeEditorEvent.FormatDocument
         EditorShortcut.GoToLine -> null
     }

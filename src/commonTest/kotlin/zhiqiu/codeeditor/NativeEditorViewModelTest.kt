@@ -1,6 +1,7 @@
 package zhiqiu.codeeditor
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -1227,5 +1228,169 @@ class NativeEditorViewModelTest {
             assertFalse(state.isModified)
             assertEquals(LineSeparator.LF, state.originalLineSeparator)
             assertEquals("a\nb", viewModel.textForSave())
+        }
+
+    @Test
+    fun formatDocumentReindentsJsonAndUndoRestoresIt() =
+        runTest {
+            viewModel.loadContent("""{"a":1,"b":[1,2]}""", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+
+            val formatted =
+                """
+                {
+                    "a": 1,
+                    "b": [
+                        1,
+                        2
+                    ]
+                }
+                """.trimIndent()
+            assertEquals(formatted, viewModel.state.value.content.getText())
+            assertTrue(viewModel.state.value.isModified)
+            assertEquals(7, viewModel.state.value.content.lineCount)
+
+            viewModel.onEvent(NativeEditorEvent.Undo)
+            advanceUntilIdle()
+            assertEquals("""{"a":1,"b":[1,2]}""", viewModel.state.value.content.getText())
+            assertFalse(viewModel.state.value.isModified, "撤销回基线内容即视为已保存")
+        }
+
+    @Test
+    fun formatDocumentHonoursTabSizeAsIndentWidth() =
+        runTest {
+            viewModel.loadContent("""{"a":[1]}""", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.TabSizeChanged(2))
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+
+            assertEquals(
+                """
+                {
+                  "a": [
+                    1
+                  ]
+                }
+                """.trimIndent(),
+                viewModel.state.value.content.getText(),
+            )
+        }
+
+    @Test
+    fun formatDocumentReindentsXml() =
+        runTest {
+            viewModel.loadContent(
+                "<resources><item name=\"a\">1</item></resources>",
+                "t.xml",
+                EditorLanguage.XML,
+            )
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+
+            val text = viewModel.state.value.content.getText()
+            assertTrue(text.contains("\n"), "XML 应逐标签换行")
+            assertTrue(text.contains("<item"), "内容不应丢失")
+            assertTrue(viewModel.state.value.isModified)
+        }
+
+    @Test
+    fun formatDocumentLeavesUnsupportedLanguageUntouched() =
+        runTest {
+            viewModel.loadContent("fun main() {}", "t.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+
+            assertEquals("fun main() {}", viewModel.state.value.content.getText())
+            assertFalse(viewModel.state.value.isModified)
+        }
+
+    @Test
+    fun formatDocumentLeavesInvalidJsonUntouched() =
+        runTest {
+            viewModel.loadContent("""{"a":1,}""", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+
+            assertEquals("""{"a":1,}""", viewModel.state.value.content.getText(), "非法 JSON 不应被改坏")
+            assertFalse(viewModel.state.value.isModified)
+            assertFalse(viewModel.state.value.canUndo, "失败不应留下撤销记录")
+        }
+
+    @Test
+    fun formatDocumentOnAlreadyFormattedJsonIsANoOp() =
+        runTest {
+            val pretty =
+                """
+                {
+                    "a": 1
+                }
+                """.trimIndent()
+            viewModel.loadContent(pretty, "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+
+            assertEquals(pretty, viewModel.state.value.content.getText())
+            assertFalse(viewModel.state.value.isModified)
+        }
+
+    @Test
+    fun formatDocumentIsIgnoredOnReadOnlyDocument() =
+        runTest {
+            viewModel.loadContent("""{"a":1}""", "t.json", EditorLanguage.JSON, readOnly = true)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+
+            assertEquals("""{"a":1}""", viewModel.state.value.content.getText())
+        }
+
+    @Test
+    fun formatDocumentKeepsCursorInsideRewrittenContent() =
+        runTest {
+            viewModel.loadContent("""{"aaaaaaaaaa":"bbbbbbbbbb","c":[1,2,3]}""", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 40))
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+
+            val line = viewModel.cursor.line
+            val column = viewModel.cursor.column
+            assertTrue(line < viewModel.state.value.content.lineCount, "光标行必须落在重排后的文档里")
+            assertTrue(
+                column <= viewModel.state.value.content.getLine(line).length,
+                "光标列不得越过所在行末尾",
+            )
+        }
+
+    @Test
+    fun formatDocumentNotifiesWhenLanguageIsUnsupported() =
+        runTest {
+            viewModel.loadContent("plain", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+
+            val notices = mutableListOf<String>()
+            val collect = launch { viewModel.uiEvents.collect { notices.add(it) } }
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+            collect.cancel()
+
+            assertTrue(notices.isNotEmpty(), "不支持格式化时要有可读提示")
         }
 }

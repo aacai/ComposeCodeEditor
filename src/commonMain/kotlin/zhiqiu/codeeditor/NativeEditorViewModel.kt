@@ -25,6 +25,7 @@ import okio.buffer
 import zhiqiu.codeeditor.buffer.ChunkedLineBuffer
 import zhiqiu.codeeditor.text.AutoClosePairs
 import zhiqiu.codeeditor.text.CodeFolding
+import zhiqiu.codeeditor.text.DocumentFormatter
 import zhiqiu.codeeditor.text.EditOp
 import zhiqiu.codeeditor.text.EnterIndent
 import zhiqiu.codeeditor.text.Indent
@@ -188,6 +189,10 @@ class NativeEditorViewModel(
 
             is NativeEditorEvent.LineSeparatorChanged -> {
                 handleLineSeparatorChanged(event.separator)
+            }
+
+            NativeEditorEvent.FormatDocument -> {
+                handleFormatDocument()
             }
 
             is NativeEditorEvent.SelectionStarted -> {
@@ -1260,6 +1265,44 @@ class NativeEditorViewModel(
         if (currentState.isReadOnly || currentState.lineSeparator == separator) return
         val next = currentState.copy(lineSeparator = separator)
         _state.value = next.copy(isModified = isContentModified(next))
+    }
+
+    /**
+     * 格式化整篇文档：只重排空白，内容逐字保留。
+     * 语言不支持、内容不合法、或本来就是规范格式时不改文档，只回一条提示。
+     */
+    private fun handleFormatDocument() {
+        val currentState = _state.value
+        if (currentState.isReadOnly) {
+            _uiEvents.tryEmit("只读文件无法格式化")
+            return
+        }
+        val language = currentState.language
+        if (!DocumentFormatter.supports(language)) {
+            _uiEvents.tryEmit("${language.displayName} 暂不支持格式化")
+            return
+        }
+        val text = currentState.content.getText()
+        val formatted = DocumentFormatter.format(text, language, currentState.tabSize)
+        if (formatted == null) {
+            _uiEvents.tryEmit("内容不合法，无法格式化")
+            return
+        }
+        if (formatted == text) {
+            _uiEvents.tryEmit("已是规范格式")
+            return
+        }
+        // 整篇重排走一次 ReplaceAll：撤销一次即可回到原样，行数变化不影响撤销粒度
+        handleContentChanged(formatted)
+        clampCursorIntoContent()
+    }
+
+    /** 文档整体重写后把光标收进新内容，避免悬在已经不存在的行/列上。 */
+    private fun clampCursorIntoContent() {
+        val state = _state.value
+        val line = cursor.line.coerceIn(0, (state.content.lineCount - 1).coerceAtLeast(0))
+        val column = cursor.column.coerceIn(0, state.content.getLine(line).length)
+        if (line != cursor.line || column != cursor.column) syncCursorNow(line, column)
     }
 
     private fun handleSelectionStarted(

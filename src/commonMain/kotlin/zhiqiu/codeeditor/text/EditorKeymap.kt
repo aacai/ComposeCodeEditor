@@ -12,6 +12,7 @@ enum class EditorShortcut {
     GoToLine,
     Close,
     Outdent,
+    Format,
 }
 
 /**
@@ -34,6 +35,8 @@ object EditorKeymap {
     ): EditorShortcut? {
         if (key == Key.Escape && !ctrlOrMeta && !alt) return EditorShortcut.Close
         if (key == Key.Tab && shift && !ctrlOrMeta && !alt) return EditorShortcut.Outdent
+        // Shift+Alt+F：与 VS Code / Acode 一致，不占用 Ctrl 组合以免和输入法冲突
+        if (key == Key.F && shift && alt && !ctrlOrMeta) return EditorShortcut.Format
         if (!ctrlOrMeta || alt) return null
 
         val letter = letterOf(key)
