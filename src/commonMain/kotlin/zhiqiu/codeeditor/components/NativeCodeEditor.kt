@@ -65,6 +65,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -115,6 +119,8 @@ import zhiqiu.codeeditor.text.BracketMatcher
 import zhiqiu.codeeditor.render.BracketPairGuide
 import zhiqiu.codeeditor.render.BracketPairGuides
 import zhiqiu.codeeditor.text.CodeFolding
+import zhiqiu.codeeditor.text.EditorKeymap
+import zhiqiu.codeeditor.text.EditorShortcut
 import zhiqiu.codeeditor.render.EditorTheme
 import zhiqiu.codeeditor.text.FoldViewport
 import zhiqiu.codeeditor.highlight.HighlightCache
@@ -369,6 +375,8 @@ fun NativeCodeEditor(
     onLineContentChange: (lineIndex: Int, newLineText: String) -> Unit,
     onCursorChange: (line: Int, column: Int) -> Unit,
     onEnterKey: (line: Int, column: Int) -> Unit = { _, _ -> },
+    /** 物理键盘快捷键（见 [EditorKeymap]）；GoToLine 之类需要宿主弹窗的语义也走这里。 */
+    onEditorShortcut: (EditorShortcut) -> Unit = {},
     onSelectionStarted: (line: Int, col: Int) -> Unit,
     onSelectionUpdated: (line: Int, col: Int) -> Unit,
     onSelectWord: (line: Int, col: Int) -> Unit = { _, _ -> },
@@ -1751,6 +1759,7 @@ val (rawLine, _) =
                             onLineContentChange = onLineContentChange,
                             onCursorChange = onCursorChange,
                             onEnterKey = onEnterKey,
+                            onEditorShortcut = onEditorShortcut,
                             onPasteText = onPasteText,
                             horizontalScrollState = horizontalScrollState,
                             charWidthPx = sliceCharWidthPx,
@@ -2527,6 +2536,7 @@ private fun EditorInputLayerHost(
     onLineContentChange: (lineIndex: Int, newLineText: String) -> Unit,
     onCursorChange: (line: Int, column: Int) -> Unit,
     onEnterKey: (line: Int, column: Int) -> Unit,
+    onEditorShortcut: (EditorShortcut) -> Unit,
     onPasteText: (String) -> Unit,
     horizontalScrollState: ScrollState,
     charWidthPx: Float = 0f,
@@ -2551,6 +2561,7 @@ private fun EditorInputLayerHost(
         onLineContentChange = onLineContentChange,
         onCursorChange = onCursorChange,
         onEnterKey = onEnterKey,
+        onEditorShortcut = onEditorShortcut,
         onPasteText = onPasteText,
         horizontalScrollState = horizontalScrollState,
         charWidthPx = charWidthPx,
@@ -2589,6 +2600,7 @@ private fun InputLayer(
     onLineContentChange: (lineIndex: Int, newLineText: String) -> Unit,
     onCursorChange: (line: Int, column: Int) -> Unit,
     onEnterKey: (line: Int, column: Int) -> Unit,
+    onEditorShortcut: (EditorShortcut) -> Unit = {},
     onPasteText: (String) -> Unit = {},
     horizontalScrollState: ScrollState,
     charWidthPx: Float = 0f,
@@ -2641,6 +2653,7 @@ private fun InputLayer(
     val latestOnLineContentChange by rememberUpdatedState(onLineContentChange)
     val latestOnCursorChange by rememberUpdatedState(onCursorChange)
     val latestOnEnterKey by rememberUpdatedState(onEnterKey)
+    val latestOnEditorShortcut by rememberUpdatedState(onEditorShortcut)
     val latestOnPasteText by rememberUpdatedState(onPasteText)
     // 点击映射用「当前窗口/字宽」而非字段内部状态，保证超长行滚到行尾后点击列始终正确（VSCode 行为）
     val latestWinStart by rememberUpdatedState(winStart)
@@ -2941,7 +2954,17 @@ private fun InputLayer(
                     ) {
                         return@onPreviewKeyEvent false
                     }
-                    if (keyEvent.key == Key.Tab) {
+                    val shortcut = EditorKeymap.resolve(
+                        key = keyEvent.key,
+                        shift = keyEvent.isShiftPressed,
+                        ctrlOrMeta = keyEvent.isCtrlPressed || keyEvent.isMetaPressed,
+                        alt = keyEvent.isAltPressed,
+                        isDesktop = isDesktopPlatform(),
+                    )
+                    if (shortcut != null) {
+                        latestOnEditorShortcut(shortcut)
+                        true
+                    } else if (keyEvent.key == Key.Tab) {
                         val spaces = " ".repeat(tabSize)
                         textFieldState.edit {
                             val start = selection.min

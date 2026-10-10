@@ -980,4 +980,159 @@ class NativeEditorViewModelTest {
             assertEquals("$old //x", viewModel.state.value.content.getLine(editLine))
             assertTrue(viewModel.state.value.contentRevision >= 1)
         }
+
+    // ==================== 回车自动缩进 ====================
+
+    @Test
+    fun enterAddsOneLevelAfterOpeningBracket() =
+        runTest {
+            viewModel.loadContent("fun main() {", "t.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 12))
+            viewModel.onEvent(NativeEditorEvent.EnterPressed(0, 12))
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals(2, state.content.lineCount)
+            assertEquals("fun main() {", state.content.getLine(0))
+            assertEquals("    ", state.content.getLine(1))
+            assertEquals(1, state.cursorLine)
+            assertEquals(4, state.cursorColumn)
+        }
+
+    @Test
+    fun enterInsideEmptyBracesExpandsThreeLines() =
+        runTest {
+            viewModel.loadContent("    {}", "t.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 5))
+            viewModel.onEvent(NativeEditorEvent.EnterPressed(0, 5))
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals(3, state.content.lineCount)
+            assertEquals("    {", state.content.getLine(0))
+            assertEquals("        ", state.content.getLine(1))
+            assertEquals("    }", state.content.getLine(2))
+            assertEquals(1, state.cursorLine)
+            assertEquals(8, state.cursorColumn)
+        }
+
+    @Test
+    fun enterMidLineKeepsRightSideVerbatim() =
+        runTest {
+            viewModel.loadContent("foo(bar) baz", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 8))
+            viewModel.onEvent(NativeEditorEvent.EnterPressed(0, 8))
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals("foo(bar)", state.content.getLine(0))
+            assertEquals(" baz", state.content.getLine(1))
+            assertEquals(0, state.cursorColumn)
+        }
+
+    @Test
+    fun undoRedoEnterRoundTrip() =
+        runTest {
+            viewModel.loadContent("fun main() {", "t.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 12))
+            viewModel.onEvent(NativeEditorEvent.EnterPressed(0, 12))
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.Undo)
+            advanceUntilIdle()
+            assertEquals(1, viewModel.state.value.content.lineCount)
+            assertEquals("fun main() {", viewModel.state.value.content.getLine(0))
+
+            viewModel.onEvent(NativeEditorEvent.Redo)
+            advanceUntilIdle()
+            val state = viewModel.state.value
+            assertEquals(2, state.content.lineCount)
+            assertEquals("    ", state.content.getLine(1))
+            assertEquals(1, state.cursorLine)
+            assertEquals(4, state.cursorColumn)
+        }
+
+    @Test
+    fun pythonColonIndentsThroughViewModel() =
+        runTest {
+            viewModel.loadContent("def f():", "t.py", EditorLanguage.Python)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 8))
+            viewModel.onEvent(NativeEditorEvent.EnterPressed(0, 8))
+            advanceUntilIdle()
+
+            assertEquals("    ", viewModel.state.value.content.getLine(1))
+        }
+
+    // ==================== 括号 / 引号自动配对 ====================
+
+    @Test
+    fun typingOpenBracketClosesPair() =
+        runTest {
+            viewModel.loadContent("foo", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 3))
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, "foo("))
+            advanceUntilIdle()
+
+            assertEquals("foo()", viewModel.state.value.content.getLine(0))
+            assertTrue(viewModel.state.value.isModified)
+        }
+
+    @Test
+    fun autoCloseUndoRemovesWholePair() =
+        runTest {
+            viewModel.loadContent("foo", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 3))
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, "foo("))
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.Undo)
+            advanceUntilIdle()
+            assertEquals("foo", viewModel.state.value.content.getLine(0))
+        }
+
+    @Test
+    fun overtypingCloserLeavesTextUnchanged() =
+        runTest {
+            viewModel.loadContent("foo()", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 4))
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, "foo())"))
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals("foo()", state.content.getLine(0))
+            assertFalse(state.isModified)
+            assertFalse(state.canUndo)
+        }
+
+    @Test
+    fun backspaceInsideEmptyPairDeletesBoth() =
+        runTest {
+            viewModel.loadContent("()", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 1))
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, ")"))
+            advanceUntilIdle()
+
+            assertEquals("", viewModel.state.value.content.getLine(0))
+        }
+
+    @Test
+    fun multiCharChangeIsNotRewrittenByAutoClose() =
+        runTest {
+            viewModel.loadContent("foo", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 3))
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, "foo(bar)"))
+            advanceUntilIdle()
+
+            assertEquals("foo(bar)", viewModel.state.value.content.getLine(0))
+        }
 }

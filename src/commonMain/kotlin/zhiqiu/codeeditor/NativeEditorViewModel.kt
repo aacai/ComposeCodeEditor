@@ -23,8 +23,11 @@ import okio.FileSystem
 import okio.Path.Companion.toPath
 import okio.buffer
 import zhiqiu.codeeditor.buffer.ChunkedLineBuffer
+import zhiqiu.codeeditor.text.AutoClosePairs
 import zhiqiu.codeeditor.text.CodeFolding
 import zhiqiu.codeeditor.text.EditOp
+import zhiqiu.codeeditor.text.EnterIndent
+import zhiqiu.codeeditor.text.Indent
 import zhiqiu.codeeditor.highlight.HighlightCache
 import zhiqiu.codeeditor.buffer.ILineBuffer
 import zhiqiu.codeeditor.buffer.LargeFileStrategy
@@ -147,6 +150,14 @@ class NativeEditorViewModel(
 
             is NativeEditorEvent.ToggleWordWrap -> {
                 handleToggleWordWrap()
+            }
+
+            is NativeEditorEvent.OutdentCurrentLine -> {
+                handleOutdentCurrentLine()
+            }
+
+            is NativeEditorEvent.DismissOverlay -> {
+                handleDismissOverlay()
             }
 
             is NativeEditorEvent.Undo -> {
@@ -363,12 +374,18 @@ class NativeEditorViewModel(
         if (lineIndex !in 0 until currentState.content.lineCount) return
         val oldText = currentState.content.getLine(lineIndex)
         if (oldText == newLineText) return
-        currentState.content.setLine(lineIndex, newLineText)
+        // 自动配对：单字符输入时补上/删掉配对符号。补对后的光标与本帧 UI 光标的落点一致，
+        // 因此这里只改行文本，光标由紧随其后的 CursorMoved 事件带上。
+        // 编辑前光标即插入点（LineContentChanged 先于 CursorMoved 到达）。
+        val pairEdit = AutoClosePairs.apply(oldText, newLineText, cursor.column)
+        val finalText = pairEdit?.line ?: newLineText
+        if (oldText == finalText) return
+        currentState.content.setLine(lineIndex, finalText)
         val lines = currentState.content.getLines()
         highlightCache.updateLine(lineIndex, lines)
         // 行级增量：仅记录被替换的那一行，避免每次按键存储整份文件（大文件 OOM 闪退根因）
         // 编辑锚点列取当前光标（LineContentChanged 先于对应 CursorMoved 到达，故为编辑前位置）
-        undoManager.push(EditOp.Single(lineIndex, oldText, newLineText, cursor.column))
+        undoManager.push(EditOp.Single(lineIndex, oldText, finalText, cursor.column))
         _state.value =
             currentState.copy(
                 isModified = true,
@@ -378,9 +395,9 @@ class NativeEditorViewModel(
                 canRedo = undoManager.canRedo,
             )
         // 括号 / import 相关改动才重算折叠，避免每个字符都扫全文件
-        if (newLineText.any { it == '{' || it == '}' } ||
+        if (finalText.any { it == '{' || it == '}' } ||
             oldText.any { it == '{' || it == '}' } ||
-            newLineText.trimStart().startsWith("import") ||
+            finalText.trimStart().startsWith("import") ||
             oldText.trimStart().startsWith("import")
         ) {
             scheduleFoldRefresh()
@@ -433,8 +450,8 @@ class NativeEditorViewModel(
     }
 
     /**
-     * 回车拆行：在 [column] 处把当前行一分为二，左半留在原行、右半成为新的一行，
-     * 光标下移新行行首。同时重算高亮（结构性变更后全量重建缓存）。
+     * 回车拆行：新行继承当前行缩进，光标前是开括号（Python 还含 `:`）时再进一级，
+     * 详见 [EnterIndent]。结构性变更后全量重建高亮缓存。
      */
     private fun handleEnterKey(
         line: Int,
@@ -443,19 +460,34 @@ class NativeEditorViewModel(
         val currentState = _state.value
         if (line < 0 || line >= currentState.content.lineCount) return
         val current = currentState.content.getLine(line)
-        val col = column.coerceIn(0, current.length)
-        val left = current.substring(0, col)
-        val right = current.substring(col)
-        currentState.content.setLine(line, left)
-        currentState.content.insertLine(line + 1, right)
+        val split = EnterIndent.split(
+            line = current,
+            column = column,
+            tabSize = currentState.tabSize,
+            indentAfterColon = currentState.language == EditorLanguage.Python,
+        )
+        currentState.content.setLine(line, split.originalLine)
+        split.appendedLines.forEachIndexed { offset, text ->
+            currentState.content.insertLine(line + 1 + offset, text)
+        }
         val newLines = currentState.content.getLines()
         highlightCache.rebuild(newLines)
-        undoManager.push(EditOp.Enter(line, current, left, right))
-        syncCursorNow(line + 1, 0)
+        undoManager.push(
+            EditOp.Enter(
+                lineIndex = line,
+                oldText = current,
+                left = split.originalLine,
+                newLines = split.appendedLines,
+                cursorLineOffset = split.cursorLineOffset,
+                cursorColumn = split.cursorColumn,
+            ),
+        )
+        val cursorLine = line + split.cursorLineOffset
+        syncCursorNow(cursorLine, split.cursorColumn)
         _state.value =
             currentState.copy(
-                cursorLine = line + 1,
-                cursorColumn = 0,
+                cursorLine = cursorLine,
+                cursorColumn = split.cursorColumn,
                 isModified = true,
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
@@ -724,6 +756,44 @@ class NativeEditorViewModel(
         refreshSearchNow()
     }
 
+    /**
+     * Shift+Tab：当前行左移一级缩进（见 [Indent.outdentLine]），无缩进可去时不做任何事。
+     * 光标同步左移，缩进变化会影响基于缩进的折叠区间，故重算折叠。
+     */
+    private fun handleOutdentCurrentLine() {
+        val currentState = _state.value
+        val line = cursor.line.coerceIn(0, (currentState.content.lineCount - 1).coerceAtLeast(0))
+        val oldText = currentState.content.getLine(line)
+        val newText = Indent.outdentLine(oldText, currentState.tabSize)
+        if (newText == oldText) return
+        val removed = oldText.length - newText.length
+        currentState.content.setLine(line, newText)
+        highlightCache.updateLine(line, currentState.content.getLines())
+        undoManager.push(EditOp.Single(line, oldText, newText, cursor.column))
+        val newColumn = (cursor.column - removed).coerceAtLeast(0)
+        syncCursorNow(line, newColumn)
+        _state.value =
+            currentState.copy(
+                cursorLine = line,
+                cursorColumn = newColumn,
+                isModified = true,
+                highlightVersion = currentState.highlightVersion + 1,
+                contentRevision = currentState.contentRevision + 1,
+                canUndo = undoManager.canUndo,
+                canRedo = undoManager.canRedo,
+            )
+        scheduleFoldRefresh()
+    }
+
+    /** Esc：先收起搜索/替换面板，没有面板时清掉选区。 */
+    private fun handleDismissOverlay() {
+        val currentState = _state.value
+        when {
+            currentState.isSearchOpen -> handleCloseSearch()
+            currentState.selection != null -> handleSelectionCleared()
+        }
+    }
+
     private fun handleGoToLine(line: Int) {
         val lineCount = _state.value.content.lineCount
         if (line < 1 || line > lineCount) return
@@ -772,14 +842,17 @@ class NativeEditorViewModel(
             }
 
             is EditOp.Enter -> {
+                val lastInserted = op.lineIndex + op.newLines.size
                 if (op.lineIndex !in 0 until currentState.content.lineCount ||
-                    op.lineIndex + 1 >= currentState.content.lineCount
+                    lastInserted >= currentState.content.lineCount
                 ) {
                     undoManager.cancelUndo(op)
                     return
                 }
                 currentState.content.setLine(op.lineIndex, op.oldText)
-                currentState.content.deleteLine(op.lineIndex + 1)
+                repeat(op.newLines.size) {
+                    currentState.content.deleteLine(op.lineIndex + 1)
+                }
                 val lines = currentState.content.getLines()
                 highlightCache.rebuild(lines)
                 _state.value =
@@ -881,18 +954,21 @@ class NativeEditorViewModel(
                     return
                 }
                 currentState.content.setLine(op.lineIndex, op.left)
-                currentState.content.insertLine(op.lineIndex + 1, op.right)
+                op.newLines.forEachIndexed { offset, text ->
+                    currentState.content.insertLine(op.lineIndex + 1 + offset, text)
+                }
                 val lines = currentState.content.getLines()
                 highlightCache.rebuild(lines)
+                val cursorLine = op.lineIndex + op.cursorLineOffset
                 _state.value =
                     currentState.copy(
                         isModified = true,
                         highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
-                        cursorLine = op.lineIndex + 1,
+                        cursorLine = cursorLine,
                         cursorColumn =
-                            op.right.length.coerceAtMost(
-                                lines.getOrNull(op.lineIndex + 1)?.length ?: 0,
+                            op.cursorColumn.coerceAtMost(
+                                lines.getOrNull(cursorLine)?.length ?: 0,
                             ),
                         selection = null,
                         canUndo = undoManager.canUndo,

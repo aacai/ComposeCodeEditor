@@ -1,5 +1,7 @@
 package zhiqiu.codeeditor
 
+import zhiqiu.codeeditor.text.EditorShortcut
+
 /** 搜索选项：区分大小写 / 全词匹配 / 正则表达式 */
 enum class SearchOption {
     CASE,
@@ -62,6 +64,12 @@ sealed interface NativeEditorEvent {
     data class TabSizeChanged(
         val size: Int,
     ) : NativeEditorEvent
+
+    /** 当前行左移一级缩进（物理键盘 Shift+Tab）。 */
+    data object OutdentCurrentLine : NativeEditorEvent
+
+    /** Esc：有搜索面板先关面板，否则清选区，都没有则忽略。 */
+    data object DismissOverlay : NativeEditorEvent
 
     data class SelectionStarted(
         val line: Int,
@@ -139,3 +147,21 @@ sealed interface NativeEditorEvent {
     /** 切换某一起始行的折叠状态（VS Code gutter chevron） */
     data class ToggleFold(val startLine: Int) : NativeEditorEvent
 }
+
+/**
+ * 快捷键到编辑器事件的映射。
+ *
+ * [EditorShortcut.GoToLine] 的跳转对话框显隐属于宿主 UI 状态，返回 null 交由宿主处理；
+ * 其余快捷键都对应一个已存在的编辑器事件，宿主只需把本函数结果派发进 ViewModel。
+ */
+fun EditorShortcut.toEditorEvent(): NativeEditorEvent? =
+    when (this) {
+        EditorShortcut.Find -> NativeEditorEvent.OpenSearch
+        EditorShortcut.Save -> NativeEditorEvent.Save
+        EditorShortcut.Undo -> NativeEditorEvent.Undo
+        EditorShortcut.Redo -> NativeEditorEvent.Redo
+        EditorShortcut.SelectAll -> NativeEditorEvent.SelectAll
+        EditorShortcut.Outdent -> NativeEditorEvent.OutdentCurrentLine
+        EditorShortcut.Close -> NativeEditorEvent.DismissOverlay
+        EditorShortcut.GoToLine -> null
+    }

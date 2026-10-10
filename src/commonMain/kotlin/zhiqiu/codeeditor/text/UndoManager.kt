@@ -2,7 +2,7 @@ package zhiqiu.codeeditor.text
 /**
  * 一次编辑操作。采用行级增量，避免存储整份文件文本导致大文件 OOM。
  * - [Single]：单行替换（输入 / 编辑某行内容）。连续同行的「插入型」输入会自动合并为一次撤销；删除型不合并。
- * - [Enter]：回车拆行（原行内容拆成 [left]，并在其下插入 [right] 行）。
+ * - [Enter]：回车拆行（原行内容拆成 [EditOp.left]，并在其下插入新行）。
  * - [ReplaceAll]：整份文本替换（粘贴 / 全量载入），低频，仍需保存整份文本。
  */
 internal sealed class EditOp {
@@ -19,11 +19,17 @@ internal sealed class EditOp {
             get() = newText.length > oldText.length
     }
 
+    /**
+     * 回车拆行：原行截为 [left]，其下插入 [newLines]（自动缩进展开配对符号时可能有两行）。
+     * 撤销回到 [oldText]，重做按 [cursorLineOffset]/[cursorColumn] 还原光标。
+     */
     data class Enter(
         val lineIndex: Int,
         val oldText: String,
         val left: String,
-        val right: String,
+        val newLines: List<String>,
+        val cursorLineOffset: Int = 1,
+        val cursorColumn: Int = 0,
     ) : EditOp()
 
     data class ReplaceAll(
