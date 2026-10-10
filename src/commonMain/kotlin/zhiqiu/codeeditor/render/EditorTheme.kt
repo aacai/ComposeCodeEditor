@@ -9,7 +9,7 @@ import zhiqiu.codeeditor.highlight.TokenType
 /** 依据 Material 背景色的红色通道粗略判断当前是否为深色主题（与编辑器明暗主题联动）。 */
 @Composable
 @ReadOnlyComposable
-internal fun isDarkTheme(): Boolean = MaterialTheme.colorScheme.background.red < 0.5f
+fun isDarkTheme(): Boolean = MaterialTheme.colorScheme.background.red < 0.5f
 
 data class EditorTheme(
     val background: Color,
