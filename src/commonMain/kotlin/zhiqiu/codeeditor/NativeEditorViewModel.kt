@@ -28,6 +28,7 @@ import zhiqiu.codeeditor.text.CodeFolding
 import zhiqiu.codeeditor.text.EditOp
 import zhiqiu.codeeditor.text.EnterIndent
 import zhiqiu.codeeditor.text.Indent
+import zhiqiu.codeeditor.text.LineSeparator
 import zhiqiu.codeeditor.highlight.HighlightCache
 import zhiqiu.codeeditor.buffer.ILineBuffer
 import zhiqiu.codeeditor.buffer.LargeFileStrategy
@@ -42,6 +43,9 @@ import zhiqiu.codeeditor.highlight.createSyntaxHighlighter
 // 光标镜像去抖窗口（ms）：热路径连续移动光标时合并为最后一次同步进 StateFlow
 private const val CURSOR_MIRROR_SYNC_DELAY_MS = 100L
 
+// 换行符探测取样行数：够判断整篇文档风格，又不用为探测读完整大文件
+private const val SEPARATOR_PROBE_LINES = 64
+
 /**
  * 编辑器核心视图模型，承载文本编辑、光标、选区、语法高亮、搜索、撤销/重做与文件读写等全部逻辑。
  *
@@ -52,6 +56,8 @@ private const val CURSOR_MIRROR_SYNC_DELAY_MS = 100L
 class NativeEditorViewModel(
     // 后台计算调度器（全文本搜索等），默认 Dispatchers.Default；测试可注入以确定性等待
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    // 文件读写调度器，默认 Dispatchers.IO；测试注入调度器后 advanceUntilIdle 才能等满整个读写
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     // 宿主的远端回传/回编译能力，默认无操作
     private val fileBridge: EditorFileBridge = EditorFileBridge,
 ) : ViewModel() {
@@ -180,6 +186,10 @@ class NativeEditorViewModel(
                 handleTabSizeChanged(event.size)
             }
 
+            is NativeEditorEvent.LineSeparatorChanged -> {
+                handleLineSeparatorChanged(event.separator)
+            }
+
             is NativeEditorEvent.SelectionStarted -> {
                 handleSelectionStarted(event.line, event.col)
             }
@@ -279,7 +289,19 @@ class NativeEditorViewModel(
      * 判断当前内容是否相对基线（已加载 / 已保存）发生改动。
      * 用内容对比而非依赖 isModified 自身历史值，避免撤销回原始内容后仍残留「未保存」标记。
      */
-    private fun isContentModified(state: NativeEditorState = _state.value): Boolean = state.content.getText() != state.originalText
+    private fun isContentModified(state: NativeEditorState = _state.value): Boolean =
+        isModifiedAgainst(state.content.getText(), state)
+
+    /**
+     * 「[text] 配上 [state] 的换行符风格」相对基线是否已改动：文本按 LF 归一后比对，
+     * 风格单独比对。只切 LF/CRLF 也算改动，否则保存后直接关闭会丢掉风格变更。
+     */
+    private fun isModifiedAgainst(
+        text: String,
+        state: NativeEditorState,
+    ): Boolean =
+        LineSeparator.normalize(text) != state.originalText ||
+            state.lineSeparator != state.originalLineSeparator
 
     /** 统一错误上报：把异常信息（类型 + 消息 + 前几行堆栈）写入 state.error，供 UI 展示。 */
     private fun reportError(
@@ -356,7 +378,7 @@ class NativeEditorViewModel(
         _state.value =
             currentState.copy(
                 content = newContent,
-                isModified = newContent.getText() != currentState.originalText,
+                isModified = isModifiedAgainst(newContent.getText(), currentState),
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
                 canUndo = undoManager.canUndo,
@@ -886,7 +908,7 @@ class NativeEditorViewModel(
                     currentState.copy(
                         content = newContent,
                         // 用恢复后的 newContent 而非撤销前旧内容对比基线，避免撤销回原始内容仍残留「未保存」
-                        isModified = newContent.getText() != currentState.originalText,
+                        isModified = isModifiedAgainst(newContent.getText(), currentState),
                         highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
                         cursorLine = cursorLine,
@@ -909,7 +931,7 @@ class NativeEditorViewModel(
                 _state.value =
                     currentState.copy(
                         content = newContent,
-                        isModified = newContent.getText() != currentState.originalText,
+                        isModified = isModifiedAgainst(newContent.getText(), currentState),
                         highlightVersion = currentState.highlightVersion + 1,
                         contentRevision = currentState.contentRevision + 1,
                         canUndo = undoManager.canUndo,
@@ -990,7 +1012,7 @@ class NativeEditorViewModel(
                 _state.value =
                     currentState.copy(
                         content = newContent,
-                        isModified = newContent.getText() != currentState.originalText,
+                        isModified = isModifiedAgainst(newContent.getText(), currentState),
                         highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
                         cursorLine = cursorLine,
@@ -1013,7 +1035,7 @@ class NativeEditorViewModel(
                 _state.value =
                     currentState.copy(
                         content = newContent,
-                        isModified = newContent.getText() != currentState.originalText,
+                        isModified = isModifiedAgainst(newContent.getText(), currentState),
                         highlightVersion = currentState.highlightVersion + 1,
                         contentRevision = currentState.contentRevision + 1,
                         canUndo = undoManager.canUndo,
@@ -1028,7 +1050,7 @@ class NativeEditorViewModel(
         viewModelScope.launch {
             // 先检查文件大小，判断是否需要显示警告
             try {
-                val fileSize = withContext(Dispatchers.IO) {
+                val fileSize = withContext(ioDispatcher) {
                     fileSystem.metadata(path.toPath()).size ?: 0L
                 }
 
@@ -1053,18 +1075,27 @@ class NativeEditorViewModel(
     }
 
     /**
-     * 实际执行文件加载（内部函数）
+     * 换行符探测取样：分块缓冲只读前 [SEPARATOR_PROBE_LINES] 行，避免为探测而全文物化。
+     * 逐行用 `\n` 重新拼接，CRLF 文件残留的行尾 `\r` 因此仍能被识别。
      */
-    private suspend fun loadFileInternal(path: String) {
+    private fun sampleForSeparatorProbe(buffer: ILineBuffer): String {
+        val count = minOf(SEPARATOR_PROBE_LINES, buffer.lineCount)
+        return (0 until count).joinToString("\n") { buffer.getLine(it) }
+    }
+
+    /**
+     * 实际执行文件加载（内部函数）
+     */    private suspend fun loadFileInternal(path: String) {
         _state.value = _state.value.copy(isLoading = true, error = null, showLargeFileWarning = null)
         try {
             val text: String
+            val separator: LineSeparator
             val language: EditorLanguage
             val newContent: ILineBuffer
             val fileSize: Long
             val lineCount: Int
 
-            withContext(Dispatchers.IO) {
+            withContext(ioDispatcher) {
                 val size = fileSystem.metadata(path.toPath()).size ?: 0L
                 language = EditorLanguage.fromExtension(path.substringAfterLast('.', ""))
 
@@ -1082,13 +1113,18 @@ class NativeEditorViewModel(
                             fileSystem = fileSystem,
                         )
                     text = "" // 大文件不预读全文
+                    // 分块缓冲按 \n 切行，CRLF 文件的行尾残留 \r，取样前几行即可探测风格
+                    separator = LineSeparator.detect(sampleForSeparatorProbe(newContent))
                     fileSize = size
                     lineCount = newContent.lineCount
                 } else {
                     // 小/中文件：使用传统 LineBuffer 完整加载
-                    val file = fileSystem.source(path.toPath()).buffer().use { it.readUtf8() }
-                    text = file
-                    newContent = LineBuffer(file)
+                    // 行缓冲内部恒为 LF：载入时归一，写盘时再按 separator 还原，
+                    // 免得 \r 混进列号、选区与高亮等一切行内计算
+                    val raw = fileSystem.source(path.toPath()).buffer().use { it.readUtf8() }
+                    separator = LineSeparator.detect(raw)
+                    text = LineSeparator.normalize(raw)
+                    newContent = LineBuffer(text)
                     fileSize = size
                     lineCount = newContent.lineCount
                 }
@@ -1112,6 +1148,8 @@ class NativeEditorViewModel(
                     fileName = path.substringAfterLast('/').substringAfterLast('\\'),
                     filePath = path,
                     originalText = text,
+                    lineSeparator = separator,
+                    originalLineSeparator = separator,
                     canUndo = false,
                     canRedo = false,
                     performanceMode = performanceMode,
@@ -1211,6 +1249,17 @@ class NativeEditorViewModel(
 
     private fun handleTabSizeChanged(size: Int) {
         _state.value = _state.value.copy(tabSize = size)
+    }
+
+    /**
+     * 切换换行符风格：只改文档属性，行缓冲里始终是 LF，写盘时才展开（见 [textForSave]）。
+     * 正因为如此，它与 [NativeEditorState.originalLineSeparator] 不一致就等于有未保存改动。
+     */
+    private fun handleLineSeparatorChanged(separator: LineSeparator) {
+        val currentState = _state.value
+        if (currentState.isReadOnly || currentState.lineSeparator == separator) return
+        val next = currentState.copy(lineSeparator = separator)
+        _state.value = next.copy(isModified = isContentModified(next))
     }
 
     private fun handleSelectionStarted(
@@ -1377,24 +1426,38 @@ class NativeEditorViewModel(
     }
 
     /**
+     * 即将写盘的全文：把 LF 行缓冲还原成 [NativeEditorState.lineSeparator] 风格。
+     *
+     * 宿主若自己走文件写入（而非 [save]），也应取这里的结果，否则 CRLF 文档会被悄悄改成 LF。
+     */
+    fun textForSave(): String =
+        LineSeparator.render(_state.value.content.getText(), _state.value.lineSeparator)
+
+    /**
      * 保存：将当前内容写回 [NativeEditorState.filePath]。
      * 本地写入成功即视为保存成功；FTP 回传失败不影响本地结果。
      * @return true 表示本地已写入成功
      */
     suspend fun save(): Boolean {
-        val path = _state.value.filePath
+        val state = _state.value
+        val path = state.filePath
         if (path.isBlank()) {
             _uiEvents.tryEmit("无法保存：没有本地路径")
             return false
         }
-        val content = _state.value.content.getText()
+        val content = textForSave()
         return try {
-            withContext(Dispatchers.IO) {
+            withContext(ioDispatcher) {
                 // 与 TextEditor 一致：直接覆写本地文件
                 java.io.File(path).writeText(content, Charsets.UTF_8)
             }
             _state.value =
-                _state.value.copy(isModified = false, originalText = content)
+                _state.value.copy(
+                    isModified = false,
+                    // 基线存 LF 归一文本，与行缓冲同口径，isModified 才可比
+                    originalText = LineSeparator.normalize(state.content.getText()),
+                    originalLineSeparator = state.lineSeparator,
+                )
             _uiEvents.tryEmit("已保存")
             // 远端回传失败不回滚本地保存
             runCatching { fileBridge.onLocalSaved(path) }
@@ -1420,16 +1483,18 @@ class NativeEditorViewModel(
      * @return true 表示写入成功
      */
     suspend fun saveAs(path: String): Boolean {
-        val content = _state.value.content.getText()
+        val state = _state.value
+        val content = textForSave()
         val name = path.substringAfterLast('/').substringAfterLast('\\')
         return try {
-            withContext(Dispatchers.IO) {
+            withContext(ioDispatcher) {
                 java.io.File(path).writeText(content, Charsets.UTF_8)
             }
             _state.value =
-                _state.value.copy(
+                state.copy(
                     isModified = false,
-                    originalText = content,
+                    originalText = LineSeparator.normalize(state.content.getText()),
+                    originalLineSeparator = state.lineSeparator,
                     filePath = path,
                     fileName = name,
                 )
@@ -1525,7 +1590,8 @@ class NativeEditorViewModel(
 
         val before = (lines.getOrNull(startLine) ?: "").substring(0, startCol)
         val after = (lines.getOrNull(endLine) ?: "").substring(endCol)
-        val insertLines = replacement.split("\n")
+        // 剪贴板常带 CRLF，而行缓冲只认 LF：先归一再切行，免得 \r 混进列宽与高亮
+        val insertLines = LineSeparator.normalize(replacement).split("\n")
 
         val replaced = mutableListOf<String>()
         replaced.addAll(lines.subList(0, startLine))
@@ -1622,7 +1688,9 @@ class NativeEditorViewModel(
         readOnly: Boolean = false,
     ) {
         viewModelScope.launch {
-            val newContent = LineBuffer(text)
+            val separator = LineSeparator.detect(text)
+            val lfText = LineSeparator.normalize(text)
+            val newContent = LineBuffer(lfText)
             val fileSize = text.length.toLong()
             val lineCount = newContent.lineCount
             val performanceMode =
@@ -1640,7 +1708,9 @@ class NativeEditorViewModel(
                     isLoading = false,
                     fileName = fileName,
                     filePath = "",
-                    originalText = text,
+                    originalText = lfText,
+                    lineSeparator = separator,
+                    originalLineSeparator = separator,
                     canUndo = false,
                     canRedo = false,
                     isReadOnly = readOnly,
@@ -1657,7 +1727,12 @@ class NativeEditorViewModel(
 
     /** 标记内容已保存：清除修改标记并以当前全文作为新基线。 */
     fun markAsSaved() {
-        val text = _state.value.content.getText()
-        _state.value = _state.value.copy(isModified = false, originalText = text)
+        val state = _state.value
+        _state.value =
+            state.copy(
+                isModified = false,
+                originalText = LineSeparator.normalize(state.content.getText()),
+                originalLineSeparator = state.lineSeparator,
+            )
     }
 }

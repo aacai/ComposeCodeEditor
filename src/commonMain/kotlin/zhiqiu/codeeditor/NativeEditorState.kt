@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import zhiqiu.codeeditor.text.FoldRegion
+import zhiqiu.codeeditor.text.LineSeparator
 import zhiqiu.codeeditor.buffer.ILineBuffer
 import zhiqiu.codeeditor.components.NativeCodeEditor
 import zhiqiu.codeeditor.buffer.PerformanceMode
@@ -55,6 +56,10 @@ data class NativeEditorState(
     val fontSize: Int = 14,
     val tabSize: Int = 4,
     val isWordWrap: Boolean = false,
+    /** 文档换行符风格：载入时探测，写盘时按此还原（行缓冲内部恒为 LF）。 */
+    val lineSeparator: LineSeparator = LineSeparator.LF,
+    /** 上次载入/保存时的换行符风格，与 [lineSeparator] 不一致即视为已改动。 */
+    val originalLineSeparator: LineSeparator = LineSeparator.LF,
     val searchQuery: String = "",
     val searchMatches: List<SearchMatch> = emptyList(),
     val isSearchOpen: Boolean = false,

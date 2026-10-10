@@ -1,6 +1,7 @@
 package zhiqiu.codeeditor
 
 import zhiqiu.codeeditor.text.EditorShortcut
+import zhiqiu.codeeditor.text.LineSeparator
 
 /** 搜索选项：区分大小写 / 全词匹配 / 正则表达式 */
 enum class SearchOption {
@@ -63,6 +64,11 @@ sealed interface NativeEditorEvent {
 
     data class TabSizeChanged(
         val size: Int,
+    ) : NativeEditorEvent
+
+    /** 切换文档换行符风格（状态栏 LF/CRLF 标签点击）。 */
+    data class LineSeparatorChanged(
+        val separator: LineSeparator,
     ) : NativeEditorEvent
 
     /** 当前行左移一级缩进（物理键盘 Shift+Tab）。 */

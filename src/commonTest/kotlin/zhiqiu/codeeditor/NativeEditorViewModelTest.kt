@@ -16,6 +16,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import zhiqiu.codeeditor.SearchMatch
 import zhiqiu.codeeditor.highlight.TokenType
+import zhiqiu.codeeditor.text.LineSeparator
 import zhiqiu.codeeditor.text.SelectionRange
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -1134,5 +1135,97 @@ class NativeEditorViewModelTest {
             advanceUntilIdle()
 
             assertEquals("foo(bar)", viewModel.state.value.content.getLine(0))
+        }
+
+    @Test
+    fun loadContentDetectsCrlfAndKeepsBufferLf() =
+        runTest {
+            viewModel.loadContent("a\r\nb\r\n", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals(LineSeparator.CRLF, state.lineSeparator)
+            assertEquals(LineSeparator.CRLF, state.originalLineSeparator)
+            assertEquals("a\nb\n", state.content.getText(), "行缓冲内部不应残留 \r，但尾部空行要保住")
+            assertFalse(state.isModified, "刚载入的文档不该带未保存标记")
+        }
+
+    @Test
+    fun loadContentDefaultsToLfWhenNoCarriageReturn() =
+        runTest {
+            viewModel.loadContent("a\nb", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+
+            assertEquals(LineSeparator.LF, viewModel.state.value.lineSeparator)
+            assertEquals("a\nb", viewModel.state.value.content.getText())
+        }
+
+    @Test
+    fun textForSaveRestoresDetectedSeparator() =
+        runTest {
+            viewModel.loadContent("a\r\nb", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+
+            assertEquals("a\r\nb", viewModel.textForSave(), "保存必须写回原文件的 CRLF")
+        }
+
+    @Test
+    fun switchingSeparatorMarksModifiedAndSwitchingBackClearsIt() =
+        runTest {
+            viewModel.loadContent("a\r\nb", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.LineSeparatorChanged(LineSeparator.LF))
+            val switched = viewModel.state.value
+            assertEquals(LineSeparator.LF, switched.lineSeparator)
+            assertTrue(switched.isModified, "只改换行符也算未保存改动")
+            assertEquals("a\nb", switched.content.getText(), "切换不应重写行缓冲")
+            assertEquals("a\nb", viewModel.textForSave())
+
+            viewModel.onEvent(NativeEditorEvent.LineSeparatorChanged(LineSeparator.CRLF))
+            assertFalse(viewModel.state.value.isModified, "切回基线风格即视为已保存")
+        }
+
+    @Test
+    fun separatorToggleIsIgnoredOnReadOnlyDocument() =
+        runTest {
+            viewModel.loadContent("a\r\nb", "t.txt", EditorLanguage.PlainText, readOnly = true)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.LineSeparatorChanged(LineSeparator.LF))
+
+            val state = viewModel.state.value
+            assertEquals(LineSeparator.CRLF, state.lineSeparator)
+            assertFalse(state.isModified)
+        }
+
+    @Test
+    fun pastingCrlfKeepsBufferLfAndDocumentStyle() =
+        runTest {
+            viewModel.loadContent("a\r\nb", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 1))
+
+            viewModel.onEvent(NativeEditorEvent.PasteSelection("X\r\nY"))
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals("aX\nY\nb", state.content.getText(), "粘贴进来的 \r 应被归一")
+            assertEquals(LineSeparator.CRLF, state.lineSeparator, "文档风格不应被粘贴内容改掉")
+            assertEquals("aX\r\nY\r\nb", viewModel.textForSave())
+        }
+
+    @Test
+    fun markAsSavedAdoptsCurrentSeparatorAsNewBaseline() =
+        runTest {
+            viewModel.loadContent("a\r\nb", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+            viewModel.onEvent(NativeEditorEvent.LineSeparatorChanged(LineSeparator.LF))
+            viewModel.markAsSaved()
+
+            val state = viewModel.state.value
+            assertFalse(state.isModified)
+            assertEquals(LineSeparator.LF, state.originalLineSeparator)
+            assertEquals("a\nb", viewModel.textForSave())
         }
 }
