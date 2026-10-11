@@ -3,11 +3,13 @@ package zhiqiu.codeeditor
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.click
@@ -38,7 +40,10 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.random.Random
 import kotlin.test.assertNull
+import kotlin.test.assertFalse
 import kotlin.test.fail
+import java.io.File
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import androidx.compose.ui.text.AnnotatedString
 import okio.FileSystem
 import okio.Path.Companion.toPath
@@ -1742,4 +1747,104 @@ class NativeCodeEditorTest {
                 Dispatchers.resetMain()
             }
         }
+
+    /**
+     * 会话恢复「看得见」的那一半：带会话载入不仅要回到第 750 行，还要让列表真的把它滚进视口。
+     * 载入与钳制在 NativeEditorSessionIoTest 已经验证，这里补的是用户唯一能感知的承诺——重开就在上次那行。
+     * 折叠那组走的是「折叠保视口」那条路径：它按旧文档锚点重算滚动，不修就会把刚恢复的位置拉回开头。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun restoredSessionScrollsTheRestoredLineIntoView() {
+        val file = File.createTempFile("editor-reveal", ".kt")
+        val restoredLine = 750
+        try {
+            file.writeText(
+                buildString {
+                    repeat(300) {
+                        append("fun f").append(it).append("() {\n  x\n}\n")
+                    }
+                },
+                Charsets.UTF_8,
+            )
+
+            val (blindLine, blindShown, blindHeadShown) = openWithSession(file, null, restoredLine)
+            assertEquals(0, blindLine, "对照组：不带会话应停在开头")
+            assertTrue(blindHeadShown, "对照组：行号定位本身要有效，否则下面的断言没有意义")
+            assertFalse(blindShown, "对照组：第 250 个函数本来就不在首屏")
+
+            val (gotLine, gotShown, _) =
+                openWithSession(file, EditorSession(cursorLine = restoredLine, cursorColumn = 4), restoredLine)
+            assertEquals(restoredLine, gotLine, "光标要回到上次那行")
+            assertTrue(gotShown, "而且要把上次那行滚进视口，而不是光标在屏外")
+
+            val (foldedLine, foldedShown, _) =
+                openWithSession(
+                    file,
+                    EditorSession(
+                        cursorLine = restoredLine,
+                        cursorColumn = 4,
+                        collapsedFoldStarts = setOf(0, 3),
+                    ),
+                    restoredLine,
+                )
+            assertEquals(restoredLine, foldedLine, "折叠恢复不该动光标落点")
+            assertTrue(foldedShown, "恢复折叠后仍然要停在上次那行，不能被旧锚点拉回开头")
+        } finally {
+            file.delete()
+        }
+    }
+
+    /** 真实走宿主那条路：ViewModel + NativeCodeEditor，返回「光标行」「目标行是否在视口内」「首行是否在视口内」。 */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun openWithSession(
+        file: File,
+        session: EditorSession?,
+        targetLine: Int,
+    ): Triple<Int, Boolean, Boolean> {
+        val scheduler = TestCoroutineScheduler()
+        Dispatchers.setMain(UnconfinedTestDispatcher(scheduler))
+        var cursorLine = -1
+        var shown = false
+        var headShown = false
+        try {
+            runComposeUiTest {
+                val viewModel =
+                    NativeEditorViewModel(
+                        defaultDispatcher = UnconfinedTestDispatcher(scheduler),
+                        ioDispatcher = UnconfinedTestDispatcher(scheduler),
+                    )
+                setContent {
+                    NativeCodeEditor(
+                        state = viewModel.state.collectAsState().value,
+                        cursor = viewModel.cursor,
+                        onLineContentChange = { line, text ->
+                            viewModel.onEvent(NativeEditorEvent.LineContentChanged(line, text))
+                        },
+                        onCursorChange = { line, col ->
+                            viewModel.onEvent(NativeEditorEvent.CursorMoved(line, col))
+                        },
+                        onSelectionStarted = { _, _ -> },
+                        onSelectionUpdated = { _, _ -> },
+                        onSelectionCleared = {},
+                        onFontSizeChanged = {},
+                        highlightCache = viewModel.highlightCache,
+                        theme = EditorTheme.dark(),
+                    )
+                }
+                awaitIdle()
+
+                viewModel.onEvent(NativeEditorEvent.LoadFile(file.absolutePath, session))
+                mainClock.advanceTimeBy(400)
+                awaitIdle()
+
+                cursorLine = viewModel.cursor.line
+                shown = runCatching { onNodeWithTag("editor-linenum-$targetLine").assertIsDisplayed() }.isSuccess
+                headShown = runCatching { onNodeWithTag("editor-linenum-0").assertIsDisplayed() }.isSuccess
+            }
+        } finally {
+            Dispatchers.resetMain()
+        }
+        return Triple(cursorLine, shown, headShown)
+    }
 }

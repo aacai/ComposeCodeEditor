@@ -124,6 +124,7 @@ import zhiqiu.codeeditor.text.EditorShortcut
 import zhiqiu.codeeditor.render.EditorTheme
 import zhiqiu.codeeditor.text.FoldViewport
 import zhiqiu.codeeditor.highlight.HighlightCache
+import zhiqiu.codeeditor.buffer.ILineBuffer
 import zhiqiu.codeeditor.buffer.PerformanceMode
 import zhiqiu.codeeditor.text.SelectionRange
 import zhiqiu.codeeditor.text.WordBoundary
@@ -460,8 +461,9 @@ fun NativeCodeEditor(
             }
     }
     // 折叠前后用于把「当前视口锚点逻辑行」映射到新的可见下标，避免 LazyList 仍按旧 index 导致跳顶/滑不到底
-    var previousFoldViewport by remember { mutableStateOf(foldViewport) }
-    var foldScrollReady by remember { mutableStateOf(false) }
+    // 锚点只在同一文档内成立：换文档必须重来，否则下方 Effect 会拿旧文档的锚点把刚恢复的位置拉回开头
+    var previousFoldViewport by remember(state.content) { mutableStateOf(foldViewport) }
+    var foldScrollReady by remember(state.content) { mutableStateOf(false) }
 
     // 单一持久输入层：始终渲染同一个 BasicTextField 实例（不随当前行切换卸载），
     // 因此换行/滚动/重组都不会丢失软键盘焦点。其垂直位置跟随当前行、水平位置跟随横向滚动。
@@ -743,34 +745,52 @@ fun NativeCodeEditor(
     // 光标行变化时只在光标行不在视口内时才滚动，避免点击视口内的行导致视口跳动；
     // 手指拖选 / 拖手柄期间完全跳过，避免「扩选改 cursor → 滚屏 → 坐标跳动」闪烁。
     // 注意：不要依赖 foldViewport——折叠时由下方专用 Effect 保视口，避免错误 scrollOffset 跳顶。
-    LaunchedEffect(isHandleDragging, isSelecting, state.isWordWrap) {
+    // 额外监听 state.content：换文档时光标行早在内容就位前就写好了，snapshotFlow 之后不会再报第二次，
+    // 不补这一下，会话恢复就只是「光标在第 250 行」而屏幕还停在开头。
+    val revealedDocument = remember { mutableStateOf<ILineBuffer?>(null) }
+    LaunchedEffect(isHandleDragging, isSelecting, state.isWordWrap, state.content) {
         if (isHandleDragging || isSelecting) return@LaunchedEffect
-        snapshotFlow {
-            // 换行模式：光标所在视觉行随列变化（同一逻辑行内换到另一视觉行也需滚屏保持可见）
-            val caretRow =
-                if (state.isWordWrap && wrapRowsLayoutState.visCols > 0) {
-                    wrapRowOfColumn(cursor.column, wrapRowsLayoutState.visCols)
-                } else {
-                    0
-                }
-            cursor.line to caretRow
-        }.collect { (cursorLine, caretRow) ->
+
+        // 换行模式：光标所在视觉行随列变化（同一逻辑行内换到另一视觉行也需滚屏保持可见）
+        fun caretRowOfCursor(): Int =
+            if (state.isWordWrap && wrapRowsLayoutState.visCols > 0) {
+                wrapRowOfColumn(cursor.column, wrapRowsLayoutState.visCols)
+            } else {
+                0
+            }
+
+        suspend fun reveal(
+            cursorLine: Int,
+            caretRow: Int,
+            freshDocument: Boolean,
+        ) {
             val visIndex =
                 wrapRowsLayoutState.firstRowOf(
                     latestFoldViewport.nearestVisibleAtOrBefore(cursorLine),
                 ) + caretRow
-            if (visIndex < 0) return@collect
-            val visible = contentListState.layoutInfo.visibleItemsInfo
-            val first = visible.firstOrNull()?.index ?: 0
-            val last = visible.lastOrNull()?.index ?: 0
-            if (visIndex < first || visIndex > last) {
-                val vpHeight = contentListState.layoutInfo.viewportSize.height
-                // scrollOffset 为「item 顶部相对视口顶部」；负值把目标行拉到视口中部
-                val centerPad = ((vpHeight - lineHeightPx) / 2f).toInt().coerceAtLeast(0)
-                runCatching { contentListState.scrollToItem(visIndex, -centerPad) }
-                runCatching { lineNumberListState.scrollToItem(visIndex, -centerPad) }
+            if (visIndex < 0) return
+            // 新文档：此刻 layoutInfo 还是旧内容那一份，「在不在视口内」不可信，直接按光标行落点；
+            // 第 0 行本来就在开头，滚它只会留出一片空白。
+            if (freshDocument) {
+                if (visIndex == 0) return
+            } else {
+                val visible = contentListState.layoutInfo.visibleItemsInfo
+                val first = visible.firstOrNull()?.index ?: 0
+                val last = visible.lastOrNull()?.index ?: 0
+                if (visIndex in first..last) return
             }
+            val vpHeight = contentListState.layoutInfo.viewportSize.height
+            // scrollOffset 为「item 顶部相对视口顶部」；负值把目标行拉到视口中部
+            val centerPad = ((vpHeight - lineHeightPx) / 2f).toInt().coerceAtLeast(0)
+            runCatching { contentListState.scrollToItem(visIndex, -centerPad) }
+            runCatching { lineNumberListState.scrollToItem(visIndex, -centerPad) }
         }
+
+        val isFreshDocument = revealedDocument.value !== state.content
+        revealedDocument.value = state.content
+        reveal(cursor.line, caretRowOfCursor(), isFreshDocument)
+        snapshotFlow { cursor.line to caretRowOfCursor() }
+            .collect { (cursorLine, caretRow) -> reveal(cursorLine, caretRow, false) }
     }
 
     // 仅在「折叠集合」变化时重映射滚动；foldRegions 防抖刷新也会换新 List，
