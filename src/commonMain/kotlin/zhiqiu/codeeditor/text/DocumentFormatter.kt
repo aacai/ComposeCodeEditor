@@ -82,6 +82,18 @@ data class LexicalError(val line: Int, val column: Int, val offset: Int, val mes
             return LexicalError(line, column, offset, message)
         }
     }
+
+    /**
+     * 把诊断点收在一个**真实存在的字符**上：[offset] 落在换行符或文档末尾时，它对应的行可能是空的，
+     * 空行没有字符可盖，行内标注就会完全看不见。这时退到上一行最后一个字符。
+     *
+     * 只给渲染用；给用户的文案仍然照实说它在哪一行。
+     */
+    fun anchorToText(text: String): LexicalError {
+        var index = offset
+        while (index > 0 && text.getOrNull(index - 1) == '\n') index--
+        return if (index == offset) this else at(text, index, message)
+    }
 }
 
 /**

@@ -266,6 +266,38 @@ class DocumentDiagnoseTest {
         }
     }
 
+    // ==================== 渲染锚点 ====================
+
+    @Test
+    fun anchorMovesEmptyLinePositionsBackToTheLastRealCharacter() {
+        val text = "[1,\n"
+        val error = expect(json(text), "文档读不通")
+        assertEquals("文档在这里就结束了，内容不完整", error.message)
+        assertEquals(1, error.line, "诊断点本身落在 EOF 对应的空行上")
+        assertEquals(0, error.column)
+
+        val anchored = error.anchorToText(text)
+        assertEquals(0, anchored.line)
+        assertEquals(3, anchored.column, "要退回上一行末尾，那里才有字符可盖")
+    }
+
+    @Test
+    fun anchorKeepsPositionsThatAlreadySitOnACharacter() {
+        val text = """{"a":1,}"""
+        val error = expect(json(text), "多余的尾逗号")
+        assertEquals(error, error.anchorToText(text), "本来就有字符可盖，不该挪坐标")
+    }
+
+    @Test
+    fun anchorNeverPointsAtALineWithoutCharacters() {
+        listOf("{\"a\"", "[1,\n", "[1,\n\n", "[]\n,\n", "</a>\n", "<a\n", "<a><b>\n").forEach { text ->
+            val anchored = (json(text) ?: xml(text))?.anchorToText(text) ?: return@forEach
+            val line = text.split("\n").getOrElse(anchored.line) { "" }
+            assertTrue(line.isNotEmpty(), "锚定之后仍停在空行上: $text -> $anchored")
+            assertInside(text, anchored)
+        }
+    }
+
     private fun assertInside(
         text: String,
         error: LexicalError,

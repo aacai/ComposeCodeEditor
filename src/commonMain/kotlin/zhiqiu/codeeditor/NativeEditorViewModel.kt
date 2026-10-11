@@ -142,31 +142,34 @@ class NativeEditorViewModel(
     }
 
     private suspend fun markLexicalError(snapshot: NativeEditorState) {
+        // 基线体积先拦一道：取全文是主线程上的 O(n) 拼接，加载大文件后不该每次停笔都拼一遍
         val diagnosable =
             DocumentFormatter.supports(snapshot.language) &&
                 snapshot.performanceMode.enableSyntaxHighlight &&
+                snapshot.originalText.length <= LEXICAL_DIAGNOSE_MAX_CHARS &&
                 _state.value.content === snapshot.content
-        val error: LexicalError? =
-            if (diagnosable) {
-                withContext(defaultDispatcher) {
-                    runCatching {
-                        val text = snapshot.content.getText()
-                        if (text.length > LEXICAL_DIAGNOSE_MAX_CHARS) {
-                            null
-                        } else {
-                            DocumentFormatter.diagnose(text, snapshot.language)
-                        }
-                    }.getOrNull()
-                }
-            } else {
-                null
-            }
+        val error = if (diagnosable) diagnoseDocument(snapshot) else null
         if (highlightCache.setLexicalError(error)) {
             _state.value =
                 _state.value.copy(
                     highlightVersion = _state.value.highlightVersion + 1,
                 )
         }
+    }
+
+    private suspend fun diagnoseDocument(snapshot: NativeEditorState): LexicalError? {
+        // 全文只能在主线程取：行缓冲会被输入实时改写，后台读它就是并发读一个正在变的 List，
+        // 正是「切换语言 / 预览时输入崩溃」那一类竞争。拿到不可变 String 后才交给后台解析。
+        val text = snapshot.content.getText()
+        if (text.length > LEXICAL_DIAGNOSE_MAX_CHARS) return null
+        val parsed =
+            withContext(defaultDispatcher) {
+                runCatching {
+                    DocumentFormatter.diagnose(text, snapshot.language)?.anchorToText(text)
+                }.getOrNull()
+            }
+        // 解析期间用户又改了内容：这一版结论已经过期，交给下一个去抖周期
+        return if (_state.value.content === snapshot.content) parsed else null
     }
 
     /** 设置当前文件的来源 APK 信息（来自 APK 内 XML 时由编辑器传入）。 */

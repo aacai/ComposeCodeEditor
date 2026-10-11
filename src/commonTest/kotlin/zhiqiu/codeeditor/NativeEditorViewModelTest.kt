@@ -1492,6 +1492,17 @@ class NativeEditorViewModelTest {
         }
 
     @Test
+    fun errorAtTheEndOfTheDocumentIsStillVisible() =
+        runTest {
+            // 缺右括号，诊断点正落在 EOF 对应的空行上；不锚定就什么都看不见
+            viewModel.loadContent("[1,\n", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+
+            val span = markerUnderlines(0).single()
+            assertEquals(2, span.start, "标注退回上一行最后一个字符")
+        }
+
+    @Test
     fun languageWithoutDiagnosticsNeverGetsMarked() =
         runTest {
             viewModel.loadContent("fun main() {", "t.kt", EditorLanguage.Kotlin)

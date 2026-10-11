@@ -82,6 +82,17 @@ class LexicalErrorMarkerTest {
     }
 
     @Test
+    fun emptyLineHasNothingToUnderline() {
+        // 这就是 VM 先做 anchorToText 的原因：EOF 类诊断点常常正好停在空行上
+        val blank = listOf("{\"a\":1", "")
+        val cache = HighlightCache(createSyntaxHighlighter(EditorLanguage.JSON), blank.size)
+        cache.rebuild(blank)
+        cache.setLexicalError(LexicalError(1, 0, 7, "文档在这里就结束了"))
+
+        assertTrue(cache.getAnnotatedLine(1, blank[1], EditorTheme.dark()).spanStyles.isEmpty())
+    }
+
+    @Test
     fun renderingKeepsEveryCharacter() {
         val theme = EditorTheme.dark()
         val cache = cache()
