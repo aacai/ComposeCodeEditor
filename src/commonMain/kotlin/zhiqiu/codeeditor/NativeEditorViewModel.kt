@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -15,6 +16,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -29,6 +32,7 @@ import zhiqiu.codeeditor.text.DocumentFormatter
 import zhiqiu.codeeditor.text.EditOp
 import zhiqiu.codeeditor.text.EnterIndent
 import zhiqiu.codeeditor.text.Indent
+import zhiqiu.codeeditor.text.LexicalError
 import zhiqiu.codeeditor.text.LineSeparator
 import zhiqiu.codeeditor.highlight.HighlightCache
 import zhiqiu.codeeditor.buffer.ILineBuffer
@@ -46,6 +50,12 @@ private const val CURSOR_MIRROR_SYNC_DELAY_MS = 100L
 
 // 换行符探测取样行数：够判断整篇文档风格，又不用为探测读完整大文件
 private const val SEPARATOR_PROBE_LINES = 64
+
+// 结构诊断防抖窗口：输入停歇后才整篇解析，热路径不为每次按键读全文
+private const val LEXICAL_DIAGNOSE_DEBOUNCE_MS = 250L
+
+// 超过这个长度就放弃诊断：解析器是全文同步扫描，大文档的这一次扫描不值当
+private const val LEXICAL_DIAGNOSE_MAX_CHARS = 512 * 1024
 
 /**
  * 编辑器核心视图模型，承载文本编辑、光标、选区、语法高亮、搜索、撤销/重做与文件读写等全部逻辑。
@@ -104,6 +114,57 @@ class NativeEditorViewModel(
     // 文件来源 APK 上下文：仅当文件是从 APK 内二进制 XML 解码而来时才有值，用于「回编译」写回
     private var sourceApkPath: String? = null
     private var sourceEntryName: String? = null
+
+    init {
+        observeLexicalErrors()
+    }
+
+    /**
+     * 结构性错误（JSON 少个 `}`、XML 标签不配对）是逐行词法器看不出来的，只能整篇解析。
+     * 这里盯住内容修订号：输入停歇后在后台解析一次，把出错坐标交给高亮缓存就地标红。
+     */
+    @OptIn(FlowPreview::class)
+    private fun observeLexicalErrors() {
+        viewModelScope.launch {
+            _state
+                .distinctUntilChanged { previous, next ->
+                    previous.content === next.content &&
+                        previous.contentRevision == next.contentRevision &&
+                        previous.language == next.language &&
+                        previous.performanceMode.enableSyntaxHighlight == next.performanceMode.enableSyntaxHighlight
+                }
+                .debounce(LEXICAL_DIAGNOSE_DEBOUNCE_MS)
+                .collect { snapshot -> markLexicalError(snapshot) }
+        }
+    }
+
+    private suspend fun markLexicalError(snapshot: NativeEditorState) {
+        val diagnosable =
+            DocumentFormatter.supports(snapshot.language) &&
+                snapshot.performanceMode.enableSyntaxHighlight &&
+                _state.value.content === snapshot.content
+        val error: LexicalError? =
+            if (diagnosable) {
+                withContext(defaultDispatcher) {
+                    runCatching {
+                        val text = snapshot.content.getText()
+                        if (text.length > LEXICAL_DIAGNOSE_MAX_CHARS) {
+                            null
+                        } else {
+                            DocumentFormatter.diagnose(text, snapshot.language)
+                        }
+                    }.getOrNull()
+                }
+            } else {
+                null
+            }
+        if (highlightCache.setLexicalError(error)) {
+            _state.value =
+                _state.value.copy(
+                    highlightVersion = _state.value.highlightVersion + 1,
+                )
+        }
+    }
 
     /** 设置当前文件的来源 APK 信息（来自 APK 内 XML 时由编辑器传入）。 */
     fun setSourceContext(apkPath: String?, entryName: String?) {
@@ -1290,7 +1351,7 @@ class NativeEditorViewModel(
 
     /**
      * 格式化整篇文档：只重排空白，内容逐字保留。
-     * 语言不支持、内容不合法、或本来就是规范格式时不改文档，只回一条提示。
+     * 语言不支持、内容读不通、或本来就是规范格式时不改文档，只回一条提示。
      */
     private fun handleFormatDocument() {
         val currentState = _state.value
@@ -1304,6 +1365,11 @@ class NativeEditorViewModel(
             return
         }
         val text = currentState.content.getText()
+        // 读不通的文档不配被重排：XML 格式化器不会拒绝标签不匹配的文件，先诊断再动手
+        DocumentFormatter.diagnose(text, language)?.let { error ->
+            _uiEvents.tryEmit("第 ${error.line + 1} 行 第 ${error.column + 1} 列：${error.message}")
+            return
+        }
         val formatted = DocumentFormatter.format(text, language, currentState.tabSize)
         if (formatted == null) {
             _uiEvents.tryEmit("内容不合法，无法格式化")

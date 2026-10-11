@@ -1,5 +1,6 @@
 package zhiqiu.codeeditor
 
+import androidx.compose.ui.text.style.TextDecoration
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -18,6 +19,7 @@ import kotlin.test.assertTrue
 import zhiqiu.codeeditor.SearchMatch
 import zhiqiu.codeeditor.buffer.PerformanceMode
 import zhiqiu.codeeditor.highlight.TokenType
+import zhiqiu.codeeditor.render.EditorTheme
 import zhiqiu.codeeditor.text.LineSeparator
 import zhiqiu.codeeditor.text.SelectionRange
 
@@ -1329,6 +1331,50 @@ class NativeEditorViewModelTest {
         }
 
     @Test
+    fun formatDocumentReportsThePositionOfInvalidJson() =
+        runTest {
+            viewModel.loadContent("""{"a":1,}""", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+
+            val notices = mutableListOf<String>()
+            val collect = launch { viewModel.uiEvents.collect { notices.add(it) } }
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+            collect.cancel()
+
+            assertTrue(
+                notices.any { it.contains("第 1 行") && it.contains("尾逗号") },
+                "格式化失败要带上出错坐标: $notices",
+            )
+        }
+
+    @Test
+    fun formatDocumentExplainsWhyBrokenXmlWasLeftUntouched() =
+        runTest {
+            viewModel.loadContent("<a><b></a>", "t.xml", EditorLanguage.XML)
+            advanceUntilIdle()
+
+            val notices = mutableListOf<String>()
+            val collect = launch { viewModel.uiEvents.collect { notices.add(it) } }
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.FormatDocument)
+            advanceUntilIdle()
+            collect.cancel()
+
+            assertTrue(
+                notices.any { it.contains("第 1 行") && it.contains("不匹配") },
+                "标签不匹配应说明位置: $notices",
+            )
+            assertFalse(
+                notices.any { it.contains("已是规范格式") },
+                "读不通的 XML 不能被说成已经是规范格式",
+            )
+        }
+
+    @Test
     fun formatDocumentOnAlreadyFormattedJsonIsANoOp() =
         runTest {
             val pretty =
@@ -1393,6 +1439,79 @@ class NativeEditorViewModelTest {
             collect.cancel()
 
             assertTrue(notices.isNotEmpty(), "不支持格式化时要有可读提示")
+        }
+
+    // ==================== 结构性错误的行内标注 ====================
+
+    private fun markerUnderlines(index: Int) =
+        viewModel.highlightCache
+            .getAnnotatedLine(
+                index,
+                viewModel.state.value.content.getLine(index),
+                EditorTheme.dark(),
+            ).spanStyles
+            .filter { it.item.textDecoration == TextDecoration.Underline }
+
+    @Test
+    fun invalidJsonIsMarkedAtTheDiagnosedPosition() =
+        runTest {
+            viewModel.loadContent("""{"a":1,}""", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+
+            val span = markerUnderlines(0).single()
+            assertEquals(7, span.start, "下划线要落在诊断出的那个字符上")
+            assertEquals(8, span.end)
+        }
+
+    @Test
+    fun markerClearsOnceTheDocumentIsFixed() =
+        runTest {
+            viewModel.loadContent("""{"a":1,}""", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+            assertTrue(markerUnderlines(0).isNotEmpty())
+
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("""{"a":1}"""))
+            advanceUntilIdle()
+
+            assertTrue(markerUnderlines(0).isEmpty(), "改对之后标注要消失")
+        }
+
+    @Test
+    fun markerWaitsForTypingToSettle() =
+        runTest {
+            viewModel.loadContent("""{"a":1}""", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("""{"a":1,}"""))
+            testDispatcher.scheduler.advanceTimeBy(200)
+            testDispatcher.scheduler.runCurrent()
+            assertTrue(markerUnderlines(0).isEmpty(), "还在输入节奏里就不该整篇解析")
+
+            advanceUntilIdle()
+            assertEquals(7, markerUnderlines(0).single().start)
+        }
+
+    @Test
+    fun languageWithoutDiagnosticsNeverGetsMarked() =
+        runTest {
+            viewModel.loadContent("fun main() {", "t.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+
+            assertTrue(markerUnderlines(0).isEmpty(), "Kotlin 没有整篇结构校验，不该凭空画线")
+        }
+
+    @Test
+    fun switchingLanguageRecomputesTheMarker() =
+        runTest {
+            // 标签不配对：XML 读不通，Kotlin 却完全不介意
+            viewModel.loadContent("<a><b></a>", "t.xml", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+            assertTrue(markerUnderlines(0).isEmpty())
+
+            viewModel.onEvent(NativeEditorEvent.LanguageChanged(EditorLanguage.XML))
+            advanceUntilIdle()
+
+            assertTrue(markerUnderlines(0).isNotEmpty(), "切到可诊断的语言后要重新标注")
         }
 
     // ==================== 性能降级（PerformanceMode）====================

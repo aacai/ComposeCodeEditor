@@ -1,0 +1,93 @@
+package zhiqiu.codeeditor.highlight
+
+import androidx.compose.ui.text.style.TextDecoration
+import zhiqiu.codeeditor.EditorLanguage
+import zhiqiu.codeeditor.render.EditorTheme
+import zhiqiu.codeeditor.text.LexicalError
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotSame
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
+
+/**
+ * 结构性错误的行内标注：整篇解析给出的坐标要变成看得见的下划线，
+ * 而且标注一变，旧的 AnnotatedString 缓存必须整体作废。
+ */
+class LexicalErrorMarkerTest {
+    private val lines = listOf("{\"a\": 1,", "\"b\": 2}")
+
+    private fun cache(): HighlightCache =
+        HighlightCache(createSyntaxHighlighter(EditorLanguage.JSON), lines.size).apply { rebuild(lines) }
+
+    private fun underlines(
+        cache: HighlightCache,
+        index: Int,
+        theme: EditorTheme,
+    ) = cache.getAnnotatedLine(index, lines[index], theme).spanStyles
+        .filter { it.item.textDecoration == TextDecoration.Underline }
+
+    @Test
+    fun markerUnderlinesTheReportedColumn() {
+        val theme = EditorTheme.dark()
+        val cache = cache()
+        assertTrue(cache.setLexicalError(LexicalError(0, 7, 7, "缺少 ',' 或 '}'")))
+        val span = underlines(cache, 0, theme).single()
+        assertTrue(span.start in 0 until lines[0].length)
+        assertTrue(span.end > span.start, "标注至少要盖住一个字符")
+        assertTrue(theme.error == span.item.color)
+    }
+
+    @Test
+    fun markerOnlyTouchesItsOwnLine() {
+        val theme = EditorTheme.dark()
+        val cache = cache()
+        cache.setLexicalError(LexicalError(0, 7, 7, "第 0 行的错"))
+        assertTrue(underlines(cache, 1, theme).isEmpty(), "错误行以外的行不该出现下划线")
+    }
+
+    @Test
+    fun columnBeyondTheLineEndIsClampedIntoTheLine() {
+        val theme = EditorTheme.light()
+        val cache = cache()
+        cache.setLexicalError(LexicalError(1, 999, 999, "行尾之后"))
+        val span = underlines(cache, 1, theme).single()
+        assertTrue(span.start < lines[1].length && span.end <= lines[1].length, "标注必须落在行内: $span")
+    }
+
+    @Test
+    fun settingTheSameMarkerTwiceIsNotAChange() {
+        val cache = cache()
+        val error = LexicalError(0, 7, 7, "多余的尾逗号")
+        assertTrue(cache.setLexicalError(error))
+        assertFalse(cache.setLexicalError(error), "坐标没变就不该重画")
+        assertTrue(cache.setLexicalError(LexicalError(1, 0, 8, "换了一个位置")))
+        assertTrue(cache.setLexicalError(null))
+        assertFalse(cache.setLexicalError(null), "本来就没有标注时不该再报变化")
+    }
+
+    @Test
+    fun markerChangeInvalidatesTheAnnotatedCache() {
+        val theme = EditorTheme.dark()
+        val cache = cache()
+        val first = cache.getAnnotatedLine(1, lines[1], theme)
+        assertSame(first, cache.getAnnotatedLine(1, lines[1], theme), "没变化时该复用缓存")
+        cache.setLexicalError(LexicalError(1, 2, 12, "标签没有闭合"))
+        val second = cache.getAnnotatedLine(1, lines[1], theme)
+        assertNotSame(first, second, "标注一变，旧缓存必须作废")
+        cache.setLexicalError(null)
+        val cleared = cache.getAnnotatedLine(1, lines[1], theme)
+        assertTrue(cleared.spanStyles.none { it.item.textDecoration == TextDecoration.Underline })
+    }
+
+    @Test
+    fun renderingKeepsEveryCharacter() {
+        val theme = EditorTheme.dark()
+        val cache = cache()
+        cache.setLexicalError(LexicalError(0, 3, 3, "键之后缺少 ':'"))
+        lines.forEachIndexed { index, line ->
+            assertEquals(line, cache.getAnnotatedLine(index, line, theme).text)
+        }
+    }
+}

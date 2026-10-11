@@ -35,6 +35,53 @@ object DocumentFormatter {
      */
     fun supports(language: EditorLanguage): Boolean =
         language == EditorLanguage.JSON || language == EditorLanguage.XML
+
+    /**
+     * 找出文档里第一个读不通的位置；返回 null 表示文档合法或该语言不做诊断。
+     *
+     * [format] 只会告诉调用方「失败」，够不到「哪一行、为什么」：
+     * 提示文案、后续的下划线标注都需要这个坐标。
+     */
+    fun diagnose(
+        text: String,
+        language: EditorLanguage,
+    ): LexicalError? {
+        if (text.isBlank()) return null
+        return when (language) {
+            EditorLanguage.JSON -> JsonPrettyPrinter.diagnose(text)
+            EditorLanguage.XML -> XmlPrettyPrinter.diagnose(text)
+            else -> null
+        }
+    }
+}
+
+/**
+ * 词法/结构诊断结果。
+ *
+ * [line]、[column] 为 0 基，与编辑器光标同一坐标系；[offset] 是绝对字符偏移。
+ */
+data class LexicalError(val line: Int, val column: Int, val offset: Int, val message: String) {
+    internal companion object {
+        /** 用绝对偏移 [index] 定位行列；越界时收进文档最后一个位置。 */
+        fun at(
+            text: String,
+            index: Int,
+            message: String,
+        ): LexicalError {
+            val offset = index.coerceIn(0, text.length)
+            var line = 0
+            var column = 0
+            for (i in 0 until offset) {
+                if (text[i] == '\n') {
+                    line++
+                    column = 0
+                } else {
+                    column++
+                }
+            }
+            return LexicalError(line, column, offset, message)
+        }
+    }
 }
 
 /**
@@ -54,6 +101,13 @@ private object JsonPrettyPrinter {
         return out.toString()
     }
 
+    /** 跑一遍同一次解析，只为了拿「第一个失败的位置 + 原因」。 */
+    fun diagnose(text: String): LexicalError? {
+        val parser = Parser(text, StringBuilder(), "  ")
+        if (parser.parseValue(0) && parser.atEnd()) return null
+        return LexicalError.at(text, parser.errorIndex, parser.errorMessage)
+    }
+
     private class Parser(
         private val text: String,
         private val out: StringBuilder,
@@ -61,15 +115,33 @@ private object JsonPrettyPrinter {
     ) {
         private var i = 0
 
+        /** 第一个出错点；-1 表示还没失败过。 */
+        var errorIndex = -1
+            private set
+        var errorMessage = ""
+            private set
+
+        /** 记录出错点并返回 false，方便写成 `return fail(...)`。 */
+        private fun fail(
+            reason: String,
+            at: Int = i,
+        ): Boolean {
+            if (errorIndex < 0) {
+                errorIndex = at
+                errorMessage = reason
+            }
+            return false
+        }
+
         fun atEnd(): Boolean {
             skipWs()
-            return i == text.length
+            return i == text.length || fail("值之后还有多余内容")
         }
 
         /** 解析一个值并写出重排后的文本；返回 false 表示语法不合法。 */
         fun parseValue(depth: Int): Boolean {
             skipWs()
-            if (i >= text.length) return false
+            if (i >= text.length) return fail("文档在这里就结束了，内容不完整")
             return when (text[i]) {
                 '{' -> container(depth, '{', '}')
                 '[' -> container(depth, '[', ']')
@@ -95,19 +167,21 @@ private object JsonPrettyPrinter {
             var first = true
             while (true) {
                 if (!first) {
-                    if (peek() != ',') return false
+                    // 容器提前见底：缺的是右括号，不是逗号
+                    if (peek() == null) return fail("缺少 '$close'")
+                    if (peek() != ',') return fail("缺少 ',' 或 '$close'")
                     i++
                     out.append(',')
                     skipWs()
                     // 尾逗号（如 `{,}` 前的 close）一律视为非法
-                    if (peek() == close) return false
+                    if (peek() == close) return fail("多余的尾逗号")
                 }
                 out.append('\n').append(indent.repeat(childDepth))
                 if (open == '{') {
-                    if (peek() != '"') return false
+                    if (peek() != '"') return fail("键必须是字符串")
                     if (!parseString()) return false
                     skipWs()
-                    if (peek() != ':') return false
+                    if (peek() != ':') return fail("键之后缺少 ':'")
                     i++
                     out.append(": ")
                 }
@@ -124,17 +198,17 @@ private object JsonPrettyPrinter {
 
         private fun parseString(): Boolean {
             val start = i
-            if (text[i] != '"') return false
+            if (text[i] != '"') return fail("这里应该是一个字符串")
             i++
             while (i < text.length) {
                 val c = text[i]
                 if (c == '\\') {
-                    if (i + 1 >= text.length || !isEscape(text[i + 1])) return false
+                    if (i + 1 >= text.length || !isEscape(text[i + 1])) return fail("非法转义")
                     if (text[i + 1] == 'u') {
                         // \u 后必须跟 4 位十六进制
-                        if (i + 5 >= text.length) return false
+                        if (i + 5 >= text.length) return fail("\\u 后面缺少 4 位十六进制")
                         for (k in 2..5) {
-                            if (!text[i + k].isDigitOrHex()) return false
+                            if (!text[i + k].isDigitOrHex()) return fail("\\u 后面不是十六进制")
                         }
                     }
                     i += 2
@@ -145,11 +219,11 @@ private object JsonPrettyPrinter {
                         return true
                     }
                     // 未转义的控制字符（含裸换行）不合法
-                    if (c < ' ') return false
+                    if (c < ' ') return fail("字符串里有未转义的控制字符")
                     i++
                 }
             }
-            return false
+            return fail("字符串没有闭合", start)
         }
 
         private fun parseScalar(): Boolean {
@@ -158,15 +232,11 @@ private object JsonPrettyPrinter {
                 text.startsWith("true", i) -> i += 4
                 text.startsWith("false", i) -> i += 5
                 text.startsWith("null", i) -> i += 4
-                else -> parseNumber() ?: return false
+                else -> parseNumber() ?: return fail("这里应该是一个值")
             }
             out.append(text, start, i)
-            // 字面量后必须紧跟分隔符/结尾，否则是 `truex`、`12abc` 这类残 token
-            skipWs()
-            return when (peek()) {
-                null, ',', '}', ']' -> true
-                else -> false
-            }
+            // 字面量后面跟什么由容器/文档结尾自己判定，这里不必重复报错
+            return true
         }
 
         /** 返回数字结束位置；null 表示不是合法 JSON 数字（不接受前导 +、.5、01、NaN）。 */

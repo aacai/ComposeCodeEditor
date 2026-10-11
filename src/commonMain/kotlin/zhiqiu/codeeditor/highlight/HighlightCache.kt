@@ -7,6 +7,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import zhiqiu.codeeditor.render.EditorTheme
 import zhiqiu.codeeditor.render.tokenToColor
+import zhiqiu.codeeditor.text.LexicalError
 
 /**
  * 行级高亮缓存，避免每次重组都全文重新 tokenize。
@@ -52,6 +53,10 @@ class HighlightCache(
 
     private var visibleStart: Int = 0
     private var visibleEnd: Int = 0
+
+    // 整篇解析才能发现的结构性错误（JSON 尾逗号、XML 标签不匹配）：
+    // 逐行词法看不到它们，只能由外部把第一个出错点交进来覆盖上色。
+    private var lexicalError: LexicalError? = null
 
     companion object {
         const val DEFAULT_MAX_CACHE_SIZE = 500
@@ -325,6 +330,19 @@ class HighlightCache(
 
     fun getTokens(index: Int): List<Token> = getTokensInternal(index)
 
+    /**
+     * 标注/清除结构性错误位置。
+     *
+     * 这个词法器读不出来的信息只能由整篇解析给出；返回是否真的变了，
+     * 变了就要让 AnnotatedString 缓存整体作废。
+     */
+    fun setLexicalError(error: LexicalError?): Boolean {
+        if (error == lexicalError) return false
+        lexicalError = error
+        annotatedCache.clear()
+        return true
+    }
+
     fun getAnnotatedLine(
         index: Int,
         line: String,
@@ -364,6 +382,13 @@ class HighlightCache(
                 if (pos < len) {
                     withStyle(SpanStyle(color = theme.foreground)) { append(line.substring(pos)) }
                 }
+                // 结构性错误的坐标可能落在行尾之外：标注该行最后一个字符，保证看得见
+                lexicalError?.takeIf { it.line == index }?.let { marker ->
+                    if (len > 0) {
+                        val start = marker.column.coerceIn(0, len - 1)
+                        addStyle(errorStyle(theme), start, start + 1)
+                    }
+                }
             }
         } catch (t: Throwable) {
             AnnotatedString(line)
@@ -381,15 +406,18 @@ class HighlightCache(
  * 词法错误除了换色还要加下划线：红字在深色主题里容易和普通 token 混淆，
  * 下划线才是「这里读不通」的确定信号。
  */
+private fun errorStyle(theme: EditorTheme): SpanStyle =
+    SpanStyle(
+        color = theme.error,
+        textDecoration = TextDecoration.Underline,
+    )
+
 private fun errorAwareStyle(
     token: Token,
     theme: EditorTheme,
 ): SpanStyle =
     if (token.type == TokenType.Error) {
-        SpanStyle(
-            color = theme.error,
-            textDecoration = TextDecoration.Underline,
-        )
+        errorStyle(theme)
     } else {
         SpanStyle(color = tokenToColor(token, theme))
     }

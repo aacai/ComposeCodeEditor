@@ -17,6 +17,107 @@ object XmlPrettyPrinter {
             .getOrDefault(xml)
     }
 
+    /**
+     * 检查标签配对与注释/声明闭合，返回第一个结构错误；文档结构合法返回 null。
+     *
+     * [format] 读不通时原样返回，调用方分不清「本来就很规范」和「压根没解析」，
+     * 这里补上位置和原因。属性值里的 `<`、`>` 不算错（引号内不扫描）。
+     */
+    fun diagnose(xml: String): LexicalError? {
+        if (xml.isBlank() || xml.startsWith("Failed to decode")) return null
+        val openTags = ArrayList<Pair<String, Int>>()
+        var i = 0
+        while (i < xml.length) {
+            val lt = xml.indexOf('<', i)
+            if (lt < 0) break
+            when {
+                xml.startsWith("<!--", lt) -> {
+                    val end = xml.indexOf("-->", lt + 4)
+                    if (end < 0) return LexicalError.at(xml, lt, "注释没有闭合")
+                    i = end + 3
+                }
+
+                xml.startsWith("<![CDATA[", lt) -> {
+                    val end = xml.indexOf("]]>", lt + 9)
+                    if (end < 0) return LexicalError.at(xml, lt, "CDATA 没有闭合")
+                    i = end + 3
+                }
+
+                xml.startsWith("<?", lt) -> {
+                    val end = xml.indexOf("?>", lt + 2)
+                    if (end < 0) return LexicalError.at(xml, lt, "处理指令没有闭合")
+                    i = end + 2
+                }
+
+                xml.startsWith("<!", lt) -> {
+                    val end = readTag(xml, lt)
+                    if (end < 0) return LexicalError.at(xml, lt, "声明没有闭合")
+                    i = end
+                }
+
+                xml.startsWith("</", lt) -> {
+                    val end = readTag(xml, lt)
+                    if (end < 0) return LexicalError.at(xml, lt, "结束标签没有闭合")
+                    val name = tagName(xml.substring(lt + 2, end - 1))
+                    if (name.isEmpty()) return LexicalError.at(xml, lt, "结束标签缺少名字")
+                    val opened = if (openTags.isEmpty()) null else openTags.removeAt(openTags.size - 1)
+                    if (opened == null) return LexicalError.at(xml, lt, "多余的结束标签 </$name>")
+                    if (opened.first != name) {
+                        return LexicalError.at(xml, lt, "结束标签 </$name> 与 <${opened.first}> 不匹配")
+                    }
+                    i = end
+                }
+
+                else -> {
+                    val next = xml.getOrNull(lt + 1)
+                    if (next == null || !next.isElementNameStart()) {
+                        return LexicalError.at(xml, lt, "'<' 后面不是合法的标签名")
+                    }
+                    val end = readTag(xml, lt)
+                    if (end < 0) return LexicalError.at(xml, lt, "标签没有闭合")
+                    val body = xml.substring(lt + 1, end - 1)
+                    unclosedQuote(body)?.let { return LexicalError.at(xml, lt, "属性引号 $it 没有闭合") }
+                    if (!body.endsWith("/")) {
+                        val name = tagName(body)
+                        if (name.isEmpty()) return LexicalError.at(xml, lt, "标签缺少名字")
+                        openTags.add(name to lt)
+                    }
+                    i = end
+                }
+            }
+        }
+        val leftover = openTags.lastOrNull() ?: return null
+        return LexicalError.at(xml, leftover.second, "标签 <${leftover.first}> 没有闭合")
+    }
+
+    /** 从 [start] 处的 `<` 读到配对的 `>`，返回 `>` 之后的位置；-1 表示标签没闭合。 */
+    private fun readTag(
+        xml: String,
+        start: Int,
+    ): Int {
+        val end = findTagEnd(xml, start)
+        return if (end > start && xml[end - 1] == '>') end else -1
+    }
+
+    /** 标签文本里没配上对的引号，返回该引号字符；全部配对返回 null。 */
+    private fun unclosedQuote(raw: String): Char? {
+        var quote: Char? = null
+        for (c in raw) {
+            quote =
+                when {
+                    quote == null -> c.takeIf { it == '"' || it == '\'' }
+                    c == quote -> null
+                    else -> quote
+                }
+        }
+        return quote
+    }
+
+    /** 取标签名的第一个 token：`a b="1"` -> a，`a/` -> a。 */
+    private fun tagName(raw: String): String = raw.trim().takeWhile { !it.isWhitespace() && it != '/' }
+
+    private fun Char.isElementNameStart(): Boolean = isLetter() || this == '_' || this == ':'
+
     private fun formatInternal(xml: String, indentSpaces: Int): String {
         val pad = " ".repeat(indentSpaces)
         val out = StringBuilder(xml.length + xml.length / 4)
