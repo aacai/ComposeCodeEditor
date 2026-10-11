@@ -421,6 +421,82 @@ class NativeEditorViewModelTest {
         }
 
     @Test
+    fun typingAnOpenerOverSelectionWrapsIt() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("foo"))
+            viewModel.onEvent(NativeEditorEvent.SelectionStarted(0, 0))
+            viewModel.onEvent(NativeEditorEvent.SelectionUpdated(0, 3))
+
+            // 输入层把选区换成一个字符后回调整行
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, "("))
+
+            val state = viewModel.state.value
+            assertEquals("(foo)", state.content.getLine(0))
+            assertEquals(
+                SelectionRange(0, 1, 0, 4),
+                assertNotNull(state.selection, "包起来的原文本应保持选中"),
+            )
+        }
+
+    @Test
+    fun typingAQuoteOverSelectionWrapsIt() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("name: foo"))
+            viewModel.onEvent(NativeEditorEvent.SelectionStarted(0, 6))
+            viewModel.onEvent(NativeEditorEvent.SelectionUpdated(0, 9))
+
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, "name: \""))
+
+            val state = viewModel.state.value
+            assertEquals("name: \"foo\"", state.content.getLine(0))
+            assertEquals(SelectionRange(0, 7, 0, 10), assertNotNull(state.selection))
+        }
+
+    @Test
+    fun typingAPlainCharOverSelectionReplacesIt() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("foo"))
+            viewModel.onEvent(NativeEditorEvent.SelectionStarted(0, 0))
+            viewModel.onEvent(NativeEditorEvent.SelectionUpdated(0, 3))
+
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, "x"))
+
+            val state = viewModel.state.value
+            assertEquals("x", state.content.getLine(0))
+            assertEquals(null, state.selection, "选区已被覆盖，不该继续挂着")
+            assertEquals(1, state.cursorColumn)
+        }
+
+    @Test
+    fun wrappedSelectionIsUndoableAsOneStep() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("foo"))
+            viewModel.onEvent(NativeEditorEvent.SelectionStarted(0, 0))
+            viewModel.onEvent(NativeEditorEvent.SelectionUpdated(0, 3))
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, "("))
+
+            viewModel.onEvent(NativeEditorEvent.Undo)
+
+            assertEquals("foo", viewModel.state.value.content.getLine(0))
+        }
+
+    @Test
+    fun typingOnAnotherLineDoesNotWrapTheSelection() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("foo\nbar"))
+            viewModel.onEvent(NativeEditorEvent.SelectionStarted(0, 0))
+            viewModel.onEvent(NativeEditorEvent.SelectionUpdated(0, 3))
+
+            // 选区在第 0 行，键入落在第 1 行：仍按普通自动配对处理
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(1, "bar("))
+
+            val state = viewModel.state.value
+            assertEquals("foo", state.content.getLine(0))
+            assertEquals("bar()", state.content.getLine(1), "无选区的行照旧补对")
+            assertEquals(SelectionRange(0, 0, 0, 3), state.selection)
+        }
+
+    @Test
     fun testSelectionHandleDraggedSkipsWhenUnchanged() =
         runTest {
             // #3：拖动期间坐标无变化时不拷贝状态（避免每帧冗余重组卡顿）。

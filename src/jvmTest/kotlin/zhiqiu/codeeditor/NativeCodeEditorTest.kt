@@ -21,6 +21,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
@@ -477,6 +478,91 @@ class NativeCodeEditorTest {
             cursor.column < lineLen,
             "第二视觉行列不应超出行尾，实际=${cursor.column}",
         )
+    }
+
+    // 选区键入可达性：单行选区停稳后镜像进输入层，键入才能整体替换选区
+    // （旧行为是有选区就丢整层输入，选中文字后敲字符毫无反应）。
+    private fun typeOverInjectedSelection(
+        initialText: String,
+        selection: SelectionRange?,
+        typed: String,
+        cursorLine: Int,
+        cursorColumn: Int,
+    ): List<Pair<Int, String>> {
+        val changes = mutableListOf<Pair<Int, String>>()
+        val content = LineBuffer(initialText)
+        val state =
+            mutableStateOf(
+                NativeEditorState(
+                    content = content,
+                    cursorLine = cursorLine,
+                    cursorColumn = cursorColumn,
+                    isReadOnly = false,
+                    language = EditorLanguage.PlainText,
+                )
+            )
+        val cursor = EditorCursorState().apply { line = cursorLine; column = cursorColumn }
+        val cache = buildHighlightCache(state.value)
+        runComposeUiTest {
+            setContent {
+                NativeCodeEditor(
+                    state = state.value,
+                    cursor = cursor,
+                    onLineContentChange = { line, text ->
+                        changes += line to text
+                        content.setLine(line, text)
+                    },
+                    onCursorChange = { line, col ->
+                        cursor.line = line
+                        cursor.column = col
+                    },
+                    onSelectionStarted = { _, _ -> },
+                    onSelectionUpdated = { _, _ -> },
+                    onSelectionCleared = {},
+                    onFontSizeChanged = {},
+                    highlightCache = cache,
+                    theme = EditorTheme.dark(),
+                )
+            }
+            awaitIdle()
+            onNodeWithTag("editor-basictextfield").performClick()
+            mainClock.advanceTimeBy(300)
+            awaitIdle()
+            // 注入选区 = 用户刚拖选完松手，等输入层把它镜像进字段
+            selection?.let { state.value = state.value.copy(selection = it) }
+            mainClock.advanceTimeBy(300)
+            awaitIdle()
+            onNodeWithTag("editor-basictextfield").performTextInput(typed)
+            mainClock.advanceTimeBy(300)
+            awaitIdle()
+        }
+        return changes
+    }
+
+    @Test
+    fun typingOverSettledSingleLineSelectionReplacesTheSelection() {
+        assertEquals(
+            listOf(0 to "a"),
+            typeOverInjectedSelection("foo", SelectionRange(0, 0, 0, 3), "a", cursorLine = 0, cursorColumn = 3),
+            "选中的 3 个字符应被这一个键入字符整体替换",
+        )
+    }
+
+    // ViewModel 的包裹判定（AutoClosePairs.surroundSelection）只认这一种上报形态：整行 = 前缀 + 单个开括号。
+    @Test
+    fun typingAnOpenerOverSelectionReachesTheEditorAsAReplacedLine() {
+        assertEquals(
+            listOf(0 to "("),
+            typeOverInjectedSelection("foo", SelectionRange(0, 0, 0, 3), "(", cursorLine = 0, cursorColumn = 3),
+            "开括号要以「选区被它整体替换」的形式上报，ViewModel 才据此包裹选区",
+        )
+    }
+
+    // 跨行选区映射不进单行输入层：输入照旧冻结，别把半行内容当成替换提交。
+    @Test
+    fun typingOverMultiLineSelectionStaysFrozen() {
+        val changes = typeOverInjectedSelection("foo\nbar", SelectionRange(0, 1, 1, 2), "a", cursorLine = 1, cursorColumn = 3)
+        assertTrue(changes.isEmpty(), "跨行选区不该被单行输入层改写，实际收到 $changes")
     }
 
     // 回归：换行模式 + 括号引导线/配对高亮位于远超首屏的全局列上，打开即崩溃

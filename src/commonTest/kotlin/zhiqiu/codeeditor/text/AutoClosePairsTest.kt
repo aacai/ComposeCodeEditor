@@ -103,4 +103,56 @@ class AutoClosePairsTest {
         assertEquals('"', AutoClosePairs.closerOf('"'))
         assertNull(AutoClosePairs.closerOf('a'))
     }
+
+    // ==================== 选区包裹 ====================
+
+    @Test
+    fun openerOverSelectionWrapsIt() {
+        assertEquals(
+            WrappedSelection("(foo)", 1, 4),
+            AutoClosePairs.surroundSelection("foo", 0, 3, "("),
+        )
+    }
+
+    @Test
+    fun openerOverMidLineSelectionWrapsOnlyTheSelection() {
+        assertEquals(
+            WrappedSelection("f((a))", 3, 4),
+            AutoClosePairs.surroundSelection("f(a)", 2, 3, "f(()"),
+        )
+    }
+
+    @Test
+    fun quoteOverSelectionWrapsIt() {
+        assertEquals(
+            WrappedSelection("\"foo\"", 1, 4),
+            AutoClosePairs.surroundSelection("foo", 0, 3, "\""),
+        )
+    }
+
+    @Test
+    fun closerOrPlainCharOverSelectionJustReplaces() {
+        // 键入闭字符/普通字符覆盖选区是标准行为，不该凭空造出一对
+        assertNull(AutoClosePairs.surroundSelection("foo", 0, 3, ")"))
+        assertNull(AutoClosePairs.surroundSelection("foo", 0, 3, "x"))
+    }
+
+    @Test
+    fun multiCharCommitOverSelectionIsNotWrapped() {
+        // 粘贴 / IME 一次提交多字符：不是「敲了一个开括号」
+        assertNull(AutoClosePairs.surroundSelection("foo", 0, 3, "()"))
+    }
+
+    @Test
+    fun editElsewhereIsNotWrapped() {
+        // 长度对得上但改动不只在选区里，说明差分不成立，交回普通替换
+        assertNull(AutoClosePairs.surroundSelection("foobar", 0, 3, "(oob"))
+    }
+
+    @Test
+    fun collapsedOrOutOfBoundsSelectionIsIgnored() {
+        assertNull(AutoClosePairs.surroundSelection("foo", 1, 1, "("))
+        assertNull(AutoClosePairs.surroundSelection("foo", 2, 5, "("))
+        assertNull(AutoClosePairs.surroundSelection("foo", -1, 3, "("))
+    }
 }

@@ -6,6 +6,13 @@ data class TypedEdit(
     val caret: Int,
 )
 
+/** 包裹选区后的整行文本，以及仍然保持选中的列区间。 */
+data class WrappedSelection(
+    val line: String,
+    val selectionStart: Int,
+    val selectionEnd: Int,
+)
+
 /**
  * 括号/引号自动配对（对齐 CodeMirror 6 `closeBrackets`，即 Acode 现内核的行为）。
  *
@@ -38,6 +45,37 @@ object AutoClosePairs {
         newLine.length == oldLine.length + 1 -> onInsert(oldLine, newLine, caretBefore)
         oldLine.length == newLine.length + 1 -> onDelete(oldLine, newLine, caretBefore)
         else -> null
+    }
+
+    /**
+     * 选区 [start]..[end] 被键入单个字符替换时：输入开括号/引号就把选区包起来，
+     * 原文本保持选中（CodeMirror 6 `surroundSelection`，与 Acode 同行为）；
+     * 键入闭字符或其他字符不算包裹，返回 null 交回普通覆盖。
+     *
+     * 只有 [newLine] 确实是「区间换成一个字符」才成立：前后缀逐段对齐，
+     * 对不上说明是多字符提交（粘贴、IME 组合），不该凭空造出一对括号。
+     */
+    fun surroundSelection(
+        oldLine: String,
+        start: Int,
+        end: Int,
+        newLine: String,
+    ): WrappedSelection? {
+        if (start < 0 || end <= start) return null
+        if (start > oldLine.length || end > oldLine.length) return null
+        if (newLine.length != oldLine.length - (end - start) + 1) return null
+        if (!newLine.regionMatches(0, oldLine, 0, start)) return null
+        if (!newLine.regionMatches(start + 1, oldLine, end, oldLine.length - end)) return null
+        val closer = pairs[newLine[start]] ?: return null
+        val selected = oldLine.substring(start, end)
+        val line =
+            StringBuilder(newLine.length + 1).apply {
+                append(newLine, 0, start + 1)
+                append(selected)
+                append(closer)
+                append(newLine, start + 1, newLine.length)
+            }.toString()
+        return WrappedSelection(line, start + 1, start + 1 + selected.length)
     }
 
     /**

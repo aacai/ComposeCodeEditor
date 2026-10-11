@@ -498,19 +498,32 @@ class NativeEditorViewModel(
         if (lineIndex !in 0 until currentState.content.lineCount) return
         val oldText = currentState.content.getLine(lineIndex)
         if (oldText == newLineText) return
-        // 自动配对：单字符输入时补上/删掉配对符号。补对后的光标与本帧 UI 光标的落点一致，
-        // 因此这里只改行文本，光标由紧随其后的 CursorMoved 事件带上。
-        // 编辑前光标即插入点（LineContentChanged 先于 CursorMoved 到达）。
-        val pairEdit = AutoClosePairs.apply(oldText, newLineText, cursor.column)
-        val finalText = pairEdit?.line ?: newLineText
+        // LineContentChanged 先于对应 CursorMoved 到达，这里读到的还是编辑前的位置。
+        // 单行选区存在时键入落在选区上，配对判据不适用，改走包裹/覆盖判定。
+        val selectedOnLine =
+            currentState.selection?.normalize()?.takeIf {
+                it.startLine == it.endLine && it.startLine == lineIndex
+            }
+        val replaceStart = selectedOnLine?.startCol?.coerceAtMost(oldText.length) ?: cursor.column
+        val replaceEnd = selectedOnLine?.endCol?.coerceAtMost(oldText.length) ?: cursor.column
+        val wrapped =
+            selectedOnLine?.let {
+                AutoClosePairs.surroundSelection(oldText, replaceStart, replaceEnd, newLineText)
+            }
+        val pairEdit =
+            if (selectedOnLine == null) {
+                AutoClosePairs.apply(oldText, newLineText, cursor.column)
+            } else {
+                null
+            }
+        val finalText = wrapped?.line ?: pairEdit?.line ?: newLineText
         if (oldText == finalText) return
         currentState.content.setLine(lineIndex, finalText)
         val lines = currentState.content.getLines()
         highlightCache.updateLine(lineIndex, lines)
         // 行级增量：仅记录被替换的那一行，避免每次按键存储整份文件（大文件 OOM 闪退根因）
-        // 编辑锚点列取当前光标（LineContentChanged 先于对应 CursorMoved 到达，故为编辑前位置）
-        undoManager.push(EditOp.Single(lineIndex, oldText, finalText, cursor.column))
-        _state.value =
+        undoManager.push(EditOp.Single(lineIndex, oldText, finalText, replaceStart))
+        var next =
             currentState.copy(
                 isModified = true,
                 highlightVersion = currentState.highlightVersion + 1,
@@ -518,6 +531,26 @@ class NativeEditorViewModel(
                 canUndo = undoManager.canUndo,
                 canRedo = undoManager.canRedo,
             )
+        when {
+            // 包裹成功：选中的仍是原文本，接着敲可以整体再换一次（CodeMirror 行为）
+            wrapped != null -> {
+                syncCursorNow(lineIndex, wrapped.selectionEnd)
+                next =
+                    next.copy(
+                        selection = SelectionRange(lineIndex, wrapped.selectionStart, lineIndex, wrapped.selectionEnd),
+                        cursorLine = lineIndex,
+                        cursorColumn = wrapped.selectionEnd,
+                    )
+            }
+            // 选区被普通字符覆盖：选区已经不在了，光标落到写入内容之后
+            selectedOnLine != null -> {
+                val typed = newLineText.length - oldText.length + (replaceEnd - replaceStart)
+                val caret = (replaceStart + typed).coerceAtLeast(0)
+                syncCursorNow(lineIndex, caret)
+                next = next.copy(selection = null, cursorLine = lineIndex, cursorColumn = caret)
+            }
+        }
+        _state.value = next
         // 括号 / import 相关改动才重算折叠，避免每个字符都扫全文件
         if (finalText.any { it == '{' || it == '}' } ||
             oldText.any { it == '{' || it == '}' } ||
