@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import zhiqiu.codeeditor.SearchMatch
 import zhiqiu.codeeditor.buffer.PerformanceMode
@@ -1736,4 +1737,132 @@ class NativeEditorViewModelTest {
             assertTrue(viewModel.state.value.isSearchOpen)
             assertEquals(2, viewModel.state.value.searchMatches.size)
         }
+
+    // ---- 会话恢复 ----
+
+    @Test
+    fun aSessionRestoresCursorSelectionAndFolds() =
+        runTest {
+            viewModel.loadContent(
+                FOLD_DOC,
+                "Session.kt",
+                EditorLanguage.Kotlin,
+                session =
+                    EditorSession(
+                        cursorLine = 3,
+                        cursorColumn = 4,
+                        selection = SelectionRange(3, 0, 4, 1),
+                        collapsedFoldStarts = setOf(0),
+                    ),
+            )
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals(3, state.cursorLine)
+            assertEquals(4, state.cursorColumn)
+            assertEquals(SelectionRange(3, 0, 4, 1), state.selection)
+            assertEquals(setOf(0), state.collapsedFolds)
+            assertEquals(3, viewModel.cursor.line, "热路径 holder 要与状态镜像一致")
+            assertFalse(state.isModified, "恢复浏览位置不算改动文档")
+        }
+
+    @Test
+    fun sessionCoordinatesOutsideTheNewDocumentAreClamped() =
+        runTest {
+            viewModel.loadContent(
+                FOLD_DOC,
+                "Session.kt",
+                EditorLanguage.Kotlin,
+                session = EditorSession(cursorLine = 99, cursorColumn = 99),
+            )
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            // 6 行文档：末行下标 5 是「}」，只有 1 列
+            assertEquals(5, state.cursorLine)
+            assertEquals(1, state.cursorColumn)
+        }
+
+    @Test
+    fun aSelectionThatNoLongerFitsIsDiscardedWhole() =
+        runTest {
+            viewModel.loadContent(
+                FOLD_DOC,
+                "Session.kt",
+                EditorLanguage.Kotlin,
+                session =
+                    EditorSession(
+                        cursorLine = 1,
+                        cursorColumn = 1,
+                        selection = SelectionRange(3, 0, 9, 0),
+                    ),
+            )
+            advanceUntilIdle()
+
+            assertNull(viewModel.state.value.selection, "另一端已经不在文档里，留半截选区更骗人")
+            assertEquals(1, viewModel.state.value.cursorLine, "光标本身仍然有效，不该被选区连坐")
+        }
+
+    @Test
+    fun restoredFoldsSurviveOnlyWhereARegionStillStarts() =
+        runTest {
+            viewModel.loadContent(
+                FOLD_DOC,
+                "Session.kt",
+                EditorLanguage.Kotlin,
+                // 0 是真区间起点；2 是「}」那行；99 早已不存在
+                session = EditorSession(collapsedFoldStarts = setOf(0, 2, 99)),
+            )
+            advanceUntilIdle()
+
+            assertEquals(setOf(0), viewModel.state.value.collapsedFolds)
+        }
+
+    @Test
+    fun currentSessionReadsTheLiveCursorNotTheDebouncedMirror() =
+        runTest {
+            viewModel.loadContent(FOLD_DOC, "Session.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(4, 2))
+            // 故意不 advanceUntilIdle：镜像还在 100ms 去抖窗口里，关闭时机采集到的必须是实时值
+            val session = viewModel.currentSession()
+
+            assertEquals(4, session.cursorLine)
+            assertEquals(2, session.cursorColumn)
+            assertEquals(6, session.lineCount)
+            assertEquals(EditorLanguage.Kotlin, session.language)
+        }
+
+    @Test
+    fun loadingWithoutASessionStartsAtTheTop() =
+        runTest {
+            // 对照组：同一份内容不带会话时必须回到开头，证明恢复确实来自 session
+            viewModel.loadContent(FOLD_DOC, "Session.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals(0, state.cursorLine)
+            assertEquals(0, state.cursorColumn)
+            assertNull(state.selection)
+            assertTrue(state.collapsedFolds.isEmpty())
+        }
+
+    @Test
+    fun loadContentKeepsTheLanguageTheHostChose() =
+        runTest {
+            viewModel.loadContent(
+                FOLD_DOC,
+                "Session.txt",
+                EditorLanguage.PlainText,
+                session = EditorSession(language = EditorLanguage.JSON),
+            )
+            advanceUntilIdle()
+
+            // 内存内容（smali/反编译/生成的 XML）由调用方定语言，会话无权改写
+            assertEquals(EditorLanguage.PlainText, viewModel.state.value.language)
+        }
 }
+
+/** 两个花括号块：折叠起点 0 与 3，用来验证折叠的存活判定。 */
+private const val FOLD_DOC = "fun a() {\n  x\n}\nfun b() {\n  y\n}"

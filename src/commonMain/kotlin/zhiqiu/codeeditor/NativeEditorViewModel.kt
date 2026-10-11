@@ -114,6 +114,9 @@ class NativeEditorViewModel(
     // 待加载的文件路径（用于大文件警告确认后继续加载）
     private var pendingFilePath: String? = null
 
+    // 待加载文件对应的会话：大文件警告确认后才能一起带上
+    private var pendingSession: EditorSession? = null
+
     // 文件来源 APK 上下文：仅当文件是从 APK 内二进制 XML 解码而来时才有值，用于「回编译」写回
     private var sourceApkPath: String? = null
     private var sourceEntryName: String? = null
@@ -261,7 +264,7 @@ class NativeEditorViewModel(
             }
 
             is NativeEditorEvent.LoadFile -> {
-                handleLoadFile(event.path)
+                handleLoadFile(event.path, event.session)
             }
 
             is NativeEditorEvent.FontSizeChanged -> {
@@ -1181,7 +1184,10 @@ class NativeEditorViewModel(
         syncCursorFromState()
     }
 
-    private fun handleLoadFile(path: String) {
+    private fun handleLoadFile(
+        path: String,
+        session: EditorSession?,
+    ) {
         viewModelScope.launch {
             // 先检查文件大小，判断是否需要显示警告
             try {
@@ -1192,6 +1198,7 @@ class NativeEditorViewModel(
                 // 如果文件大小超过警告阈值，显示警告对话框
                 if (LargeFileStrategy.shouldShowWarning(fileSize, 0)) {
                     pendingFilePath = path
+                    pendingSession = session
                     _state.value = _state.value.copy(
                         showLargeFileWarning = LargeFileWarning(
                             filePath = path,
@@ -1205,7 +1212,7 @@ class NativeEditorViewModel(
             }
 
             // 执行实际加载
-            loadFileInternal(path)
+            loadFileInternal(path, session)
         }
     }
 
@@ -1220,19 +1227,22 @@ class NativeEditorViewModel(
 
     /**
      * 实际执行文件加载（内部函数）
-     */    private suspend fun loadFileInternal(path: String) {
+     */    private suspend fun loadFileInternal(
+        path: String,
+        session: EditorSession?,
+    ) {
         _state.value = _state.value.copy(isLoading = true, error = null, showLargeFileWarning = null)
         try {
             val text: String
             val separator: LineSeparator
-            val language: EditorLanguage
+            val detectedLanguage: EditorLanguage
             val newContent: ILineBuffer
             val fileSize: Long
             val lineCount: Int
 
             withContext(ioDispatcher) {
                 val size = fileSystem.metadata(path.toPath()).size ?: 0L
-                language = EditorLanguage.fromExtension(path.substringAfterLast('.', ""))
+                detectedLanguage = EditorLanguage.fromExtension(path.substringAfterLast('.', ""))
 
                 // 预判性能模式
                 val estimatedMode = LargeFileStrategy.getPerformanceMode(size)
@@ -1265,37 +1275,106 @@ class NativeEditorViewModel(
                 }
             }
 
-            // 根据文件大小和行数判断性能模式
-            val performanceMode = LargeFileStrategy.getPerformanceMode(fileSize, lineCount)
-
-            // 高亮器就位后先占位，立即显示文本（无高亮），再后台渐进上色，
-            // 避免大文件一次性 tokenize 阻塞首屏
-            highlighter = createSyntaxHighlighter(language)
-            highlightCache =
-                HighlightCache(highlighter, lineCount, maxLines = performanceMode.maxHighlightLines)
-            val lines = newContent.getLines()
-            highlightCache.prefill(lines)
-            syncCursorNow(0, 0)
-            _state.value =
-                NativeEditorState(
-                    content = newContent,
-                    language = language,
-                    isLoading = false,
-                    fileName = path.substringAfterLast('/').substringAfterLast('\\'),
-                    filePath = path,
-                    originalText = text,
-                    lineSeparator = separator,
-                    originalLineSeparator = separator,
-                    canUndo = false,
-                    canRedo = false,
-                    performanceMode = performanceMode,
-                )
-            undoManager.clear()
-            startIncrementalHighlight(lines)
-            refreshFolds(lines)
+            installDocument(
+                newContent = newContent,
+                filePath = path,
+                fileName = path.substringAfterLast('/').substringAfterLast('\\'),
+                // 用户手动切过语言模式就沿用它，否则按扩展名探测
+                language = session?.language ?: detectedLanguage,
+                separator = separator,
+                originalSeparator = separator,
+                baselineText = text,
+                modified = false,
+                readOnly = false,
+                fileSize = fileSize,
+                session = session,
+            )
         } catch (e: Exception) {
             _state.value = _state.value.copy(isLoading = false, error = "加载文件失败: ${e.message}")
         }
+    }
+
+    /**
+     * 文档装载的统一收口：建高亮缓存、落状态、清撤销栈、渐进上色、重算折叠。
+     * 磁盘加载 / 内存内容 / 未保存草稿三条入口都汇到这里，会话恢复因此只实现一次。
+     */
+    private suspend fun installDocument(
+        newContent: ILineBuffer,
+        filePath: String,
+        fileName: String,
+        language: EditorLanguage,
+        separator: LineSeparator,
+        originalSeparator: LineSeparator,
+        baselineText: String,
+        modified: Boolean,
+        readOnly: Boolean,
+        fileSize: Long,
+        session: EditorSession?,
+    ) {
+        val lineCount = newContent.lineCount
+        val performanceMode = LargeFileStrategy.getPerformanceMode(fileSize, lineCount)
+        // 高亮器就位后先占位，立即显示文本（无高亮），再后台渐进上色，
+        // 避免大文件一次性 tokenize 阻塞首屏
+        highlighter = createSyntaxHighlighter(language)
+        highlightCache =
+            HighlightCache(highlighter, lineCount, maxLines = performanceMode.maxHighlightLines)
+        val lines = newContent.getLines()
+        highlightCache.prefill(lines)
+        val target = clampSessionToContent(session, newContent)
+        syncCursorNow(target.line, target.column)
+        _state.value =
+            NativeEditorState(
+                content = newContent,
+                language = language,
+                isLoading = false,
+                fileName = fileName,
+                filePath = filePath,
+                originalText = baselineText,
+                lineSeparator = separator,
+                originalLineSeparator = originalSeparator,
+                isModified = modified,
+                canUndo = false,
+                canRedo = false,
+                isReadOnly = readOnly,
+                performanceMode = performanceMode,
+                cursorLine = target.line,
+                cursorColumn = target.column,
+                selection = target.selection,
+                collapsedFolds = session?.collapsedFoldStarts ?: emptySet(),
+            )
+        undoManager.clear()
+        startIncrementalHighlight(lines)
+        // 折叠起点随后与重新探测出的区间取交集，内容变了收在别处的折叠会自己掉
+        refreshFolds(lines)
+    }
+
+    /** 会话坐标落到新文档上的有效落点。 */
+    private data class SessionTarget(
+        val line: Int,
+        val column: Int,
+        val selection: SelectionRange?,
+    )
+
+    /**
+     * 快照坐标来自上一版本文档，直接写进状态就是越界索引：光标钳回有效行列，
+     * 选区只要有一端超出内容就整块丢弃（留半截选区比没有更难解释）。
+     */
+    private fun clampSessionToContent(
+        session: EditorSession?,
+        content: ILineBuffer,
+    ): SessionTarget {
+        val lineCount = content.lineCount
+        if (session == null || lineCount <= 0) return SessionTarget(0, 0, null)
+        val line = session.cursorLine.coerceIn(0, lineCount - 1)
+        val column = session.cursorColumn.coerceIn(0, content.getLine(line).length)
+        val selection =
+            session.selection?.normalize()?.takeIf {
+                it.startLine in 0 until lineCount &&
+                    it.endLine in 0 until lineCount &&
+                    it.startCol in 0..content.getLine(it.startLine).length &&
+                    it.endCol in 0..content.getLine(it.endLine).length
+            }
+        return SessionTarget(line, column, selection)
     }
 
     /**
@@ -1303,12 +1382,14 @@ class NativeEditorViewModel(
      */
     private fun handleConfirmLoadLargeFile() {
         val path = pendingFilePath
+        val session = pendingSession
         pendingFilePath = null
+        pendingSession = null
         _state.value = _state.value.copy(showLargeFileWarning = null)
 
         if (path != null) {
             viewModelScope.launch {
-                loadFileInternal(path)
+                loadFileInternal(path, session)
             }
         }
     }
@@ -1318,6 +1399,7 @@ class NativeEditorViewModel(
      */
     private fun handleCancelLoadLargeFile() {
         pendingFilePath = null
+        pendingSession = null
         _state.value = _state.value.copy(showLargeFileWarning = null)
     }
 
@@ -1872,47 +1954,106 @@ class NativeEditorViewModel(
     /**
      * 以纯文本载入编辑器（不走文件 IO），用于内存内容编辑场景（如 smali 编辑）。
      * 设定语言、基线文本与只读态，重建高亮缓存并在主线程分块渐进上色。
+     * [session] 用来恢复上次的浏览位置（如切走再切回同一个类），语言仍以调用方指定为准。
      */
     fun loadContent(
         text: String,
         fileName: String,
         language: EditorLanguage,
         readOnly: Boolean = false,
+        session: EditorSession? = null,
     ) {
         viewModelScope.launch {
-            val separator = LineSeparator.detect(text)
-            val lfText = LineSeparator.normalize(text)
-            val newContent = LineBuffer(lfText)
-            val fileSize = text.length.toLong()
-            val lineCount = newContent.lineCount
-            val performanceMode =
-                runCatching { LargeFileStrategy.getPerformanceMode(fileSize, lineCount) }
-                    .getOrDefault(PerformanceMode.FULL)
-            highlighter = createSyntaxHighlighter(language)
-            highlightCache =
-                HighlightCache(highlighter, lineCount, maxLines = performanceMode.maxHighlightLines)
-            val lines = newContent.getLines()
-            highlightCache.prefill(lines)
-            syncCursorNow(0, 0)
-            _state.value =
-                NativeEditorState(
-                    content = newContent,
-                    language = language,
-                    isLoading = false,
-                    fileName = fileName,
+            try {
+                val separator = LineSeparator.detect(text)
+                val lfText = LineSeparator.normalize(text)
+                installDocument(
+                    newContent = LineBuffer(lfText),
                     filePath = "",
-                    originalText = lfText,
-                    lineSeparator = separator,
-                    originalLineSeparator = separator,
-                    canUndo = false,
-                    canRedo = false,
-                    isReadOnly = readOnly,
-                    performanceMode = performanceMode,
+                    fileName = fileName,
+                    language = language,
+                    separator = separator,
+                    originalSeparator = separator,
+                    baselineText = lfText,
+                    modified = false,
+                    readOnly = readOnly,
+                    fileSize = text.length.toLong(),
+                    session = session,
                 )
-            undoManager.clear()
-            startIncrementalHighlight(lines)
-            refreshFolds(lines)
+            } catch (t: Throwable) {
+                reportError("loadContent", t)
+            }
         }
+    }
+
+    /**
+     * 恢复上次离开时未保存的草稿：内容用草稿，基线用磁盘现存文本（读不到就按空算），
+     * 于是打开即「已修改」，保存会写回原路径。
+     * [filePath] 传空串即便签态：没有磁盘基线，标题取会话里的 [EditorSession.fileName]。
+     */
+    fun loadDraft(
+        draftText: String,
+        filePath: String,
+        session: EditorSession? = null,
+    ) {
+        viewModelScope.launch {
+            try {
+                val diskText =
+                    if (filePath.isBlank()) {
+                        ""
+                    } else {
+                        withContext(ioDispatcher) {
+                            runCatching {
+                                fileSystem.source(filePath.toPath()).buffer().use { it.readUtf8() }
+                            }.getOrDefault("")
+                        }
+                    }
+                val lfDraft = LineSeparator.normalize(draftText)
+                val baseline = LineSeparator.normalize(diskText)
+                // 草稿里保留的是用户选的风格，磁盘那份才是基线；只改风格没改字面也要算已修改
+                val separator = session?.lineSeparator ?: LineSeparator.detect(draftText)
+                val originalSeparator = LineSeparator.detect(diskText)
+                val language = session?.language ?: EditorLanguage.fromExtension(filePath.substringAfterLast('.', ""))
+                installDocument(
+                    newContent = LineBuffer(lfDraft),
+                    filePath = filePath,
+                    fileName = session?.fileName?.takeIf { it.isNotBlank() }
+                        ?: filePath.substringAfterLast('/').substringAfterLast('\\'),
+                    language = language,
+                    separator = separator,
+                    originalSeparator = originalSeparator,
+                    baselineText = baseline,
+                    modified = baseline != lfDraft || separator != originalSeparator,
+                    readOnly = false,
+                    fileSize = draftText.length.toLong(),
+                    session = session,
+                )
+            } catch (t: Throwable) {
+                reportError("loadDraft", t)
+            }
+        }
+    }
+
+    /**
+     * 采集当前会话交给宿主持久化。
+     * 光标取热路径 holder 而非 StateFlow 镜像：镜像是去抖的，关闭瞬间可能还停在上一处。
+     * 载入中/载入失败时没有可信坐标，返回空会话（宿主按 lineCount==0 忽略即可）。
+     */
+    fun currentSession(): EditorSession {
+        val state = _state.value
+        if (state.isLoading || state.error != null || state.showLargeFileWarning != null) {
+            return EditorSession()
+        }
+        return EditorSession(
+            cursorLine = cursor.line,
+            cursorColumn = cursor.column,
+            selection = state.selection,
+            collapsedFoldStarts = state.collapsedFolds,
+            language = state.language,
+            lineSeparator = state.lineSeparator,
+            fileName = state.fileName,
+            lineCount = state.content.lineCount,
+        )
     }
 
     /** 当前编辑器全文。 */

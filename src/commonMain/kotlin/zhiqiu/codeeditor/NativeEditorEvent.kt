@@ -54,8 +54,14 @@ sealed interface NativeEditorEvent {
 
     data object Redo : NativeEditorEvent
 
+    /**
+     * 载入磁盘文件。
+     * [session] 为上次离开时的会话（光标/折叠/语言…），宿主从自己的存储里取回后传入；
+     * 传 null 就是干净打开。快照来自旧版本文档时，应用前会被夹回有效范围。
+     */
     data class LoadFile(
         val path: String,
+        val session: EditorSession? = null,
     ) : NativeEditorEvent
 
     data class FontSizeChanged(
