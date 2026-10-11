@@ -220,6 +220,44 @@ class NativeEditorSessionIoTest {
         }
 
     @Test
+    fun aStaleDraftThatStillMatchesTheDiskIsNotUnsaved() =
+        runTest {
+            // 存盘后立刻退出可能赶不上一次去抖写入，草稿会过期地留在会话里。
+            // 它和磁盘内容一致时必须以「已保存」的面目重开，而不是凭空多出未保存标记
+            write("fun a() {\n  x\n}\n")
+            viewModel.loadDraft(
+                draftText = "fun a() {\n  x\n}\n",
+                filePath = file.absolutePath,
+                session = EditorSession(cursorLine = 1, cursorColumn = 2),
+            )
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertFalse(state.isModified, "草稿就是磁盘那份，不该显示未保存")
+            assertEquals("fun a() {\n  x\n}\n", state.content.getText())
+            assertEquals(1, state.cursorLine, "位置照样要恢复")
+            assertEquals(2, state.cursorColumn)
+        }
+
+    @Test
+    fun aDraftWhoseFileWasOverwrittenOnDiskIsStillUnsaved() =
+        runTest {
+            // 基线取的是磁盘那份：磁盘被别处改写过，草稿相对它仍是未保存内容
+            write("fun a() {\n  y\n}\n")
+            viewModel.loadDraft(
+                draftText = "fun a() {\n  x\n}\n",
+                filePath = file.absolutePath,
+            )
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertTrue(state.isModified, "不能拿磁盘当基线把用户的半截改动判定为已保存")
+            assertEquals("fun a() {\n  x\n}\n", state.content.getText())
+            assertTrue(viewModel.save())
+            assertEquals("fun a() {\n  x\n}\n", file.readText(Charsets.UTF_8))
+        }
+
+    @Test
     fun aStaleSelectionFromTheDraftIsDroppedButTheCursorIsNot() =
         runTest {
             write("alpha\n")
