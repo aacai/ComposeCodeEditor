@@ -57,6 +57,9 @@ private const val LEXICAL_DIAGNOSE_DEBOUNCE_MS = 250L
 // 超过这个长度就放弃诊断：解析器是全文同步扫描，大文档的这一次扫描不值当
 private const val LEXICAL_DIAGNOSE_MAX_CHARS = 512 * 1024
 
+/** 诊断坐标是 0 基的，讲给人听要换成 1 基。 */
+private fun LexicalError.readablePosition(): String = "第 ${line + 1} 行 第 ${column + 1} 列：$message"
+
 /**
  * 编辑器核心视图模型，承载文本编辑、光标、选区、语法高亮、搜索、撤销/重做与文件读写等全部逻辑。
  *
@@ -1365,14 +1368,20 @@ class NativeEditorViewModel(
             return
         }
         val text = currentState.content.getText()
-        // 读不通的文档不配被重排：XML 格式化器不会拒绝标签不匹配的文件，先诊断再动手
-        DocumentFormatter.diagnose(text, language)?.let { error ->
-            _uiEvents.tryEmit("第 ${error.line + 1} 行 第 ${error.column + 1} 列：${error.message}")
-            return
+        // XML 的格式化器不校验标签配对，垃圾进照样往外排，必须先诊断再动手；
+        // JSON 的格式化本身就是一次严格解析，失败即非法，拿它当校验就省掉整篇重复解析。
+        if (language == EditorLanguage.XML) {
+            DocumentFormatter.diagnose(text, language)?.let { error ->
+                _uiEvents.tryEmit(error.readablePosition())
+                return
+            }
         }
         val formatted = DocumentFormatter.format(text, language, currentState.tabSize)
         if (formatted == null) {
-            _uiEvents.tryEmit("内容不合法，无法格式化")
+            _uiEvents.tryEmit(
+                DocumentFormatter.diagnose(text, language)?.readablePosition()
+                    ?: "内容不合法，无法格式化",
+            )
             return
         }
         if (formatted == text) {

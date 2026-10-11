@@ -101,16 +101,31 @@ private object JsonPrettyPrinter {
         return out.toString()
     }
 
-    /** 跑一遍同一次解析，只为了拿「第一个失败的位置 + 原因」。 */
+    /**
+     * 跑一遍同一次解析，只为了拿「第一个失败的位置 + 原因」。
+     * 输出丢给 [Discard]：诊断只要语法，不该再为整篇重排结果分配一份缓冲。
+     */
     fun diagnose(text: String): LexicalError? {
-        val parser = Parser(text, StringBuilder(), "  ")
+        val parser = Parser(text, Discard, "  ")
         if (parser.parseValue(0) && parser.atEnd()) return null
         return LexicalError.at(text, parser.errorIndex, parser.errorMessage)
     }
 
+    private object Discard : Appendable {
+        override fun append(csq: CharSequence?): Appendable = this
+
+        override fun append(
+            csq: CharSequence?,
+            start: Int,
+            end: Int,
+        ): Appendable = this
+
+        override fun append(c: Char): Appendable = this
+    }
+
     private class Parser(
         private val text: String,
-        private val out: StringBuilder,
+        private val out: Appendable,
         private val indent: String,
     ) {
         private var i = 0
