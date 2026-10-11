@@ -249,6 +249,29 @@ class DocumentDiagnoseTest {
         assertNull(xml("<!DOCTYPE html><a></a>"))
     }
 
+    @Test
+    fun xmlSecondRootElementIsAnError() {
+        val selfClosed = expect(xml("<a/><b/>"), "XML 只能有一个根元素")
+        assertEquals(4, selfClosed.column)
+        assertEquals("根元素 <a> 之后还有第二个元素", selfClosed.message)
+
+        val closed = expect(xml("<a></a><b>"), "闭合之后再来一个根同样不是文档")
+        assertEquals("根元素 <a> 之后还有第二个元素", closed.message)
+    }
+
+    @Test
+    fun xmlAfterTheRootOnlyCommentsAndPIsAreLegal() {
+        assertNull(xml("<a></a>\n<!-- trailing -->\n<?target data?>\n"))
+        assertEquals(
+            "根元素 <a> 之外还有 CDATA",
+            expect(xml("<a></a><![CDATA[x]]>"), "CDATA 只能在元素内容里").message,
+        )
+        assertEquals(
+            "根元素 <a> 之外还有声明",
+            expect(xml("<a/><!DOCTYPE html>"), "声明必须在根之前").message,
+        )
+    }
+
     // ==================== 其他 ====================
 
     @Test

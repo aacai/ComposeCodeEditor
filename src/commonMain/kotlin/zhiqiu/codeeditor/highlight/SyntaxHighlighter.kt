@@ -6,7 +6,8 @@ package zhiqiu.codeeditor.highlight
  *  - [commentDepth]：块注释嵌套层数（Kotlin 的块注释可以一层套一层，C 系不行）
  *  - [openString]：跨行字符串的分隔符（Kotlin `"""`、Python `'''`、Shell 的单引号串等）
  *
- * 两者互斥：进入字符串就不可能同时在注释里，反之亦然。
+ * 词法器一次只延续其中一个：还没闭合的字符串里不会有注释开始，反之亦然。
+ * 同时给出两者不是合法输入，但这里不做断言——高亮器出错不该让整行失去颜色。
  */
 data class HighlightState(
     val commentDepth: Int = 0,

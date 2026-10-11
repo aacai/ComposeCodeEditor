@@ -84,6 +84,8 @@ class HighlightCache(
     fun rebuild(lines: List<String>) {
         gen++
         annotatedCache.clear()
+        // 文档整体重排/撤销后，旧坐标指的是已经不存在的字符，留着就是骗人
+        lexicalError = null
         lruTokens.clear()
         lruStates.clear()
         sortedLineTokens.clear()
@@ -153,6 +155,7 @@ class HighlightCache(
     fun prefill(lines: List<String>) {
         gen++
         annotatedCache.clear()
+        lexicalError = null
         lruTokens.clear()
         lruStates.clear()
         sortedLineTokens.clear()

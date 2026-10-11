@@ -18,7 +18,7 @@ object XmlPrettyPrinter {
     }
 
     /**
-     * 检查标签配对与注释/声明闭合，返回第一个结构错误；文档结构合法返回 null。
+     * 检查标签配对、单根与注释/声明闭合，返回第一个结构错误；文档结构合法返回 null。
      *
      * [format] 读不通时原样返回，调用方分不清「本来就很规范」和「压根没解析」，
      * 这里补上位置和原因。属性值里的 `<`、`>` 不算错（引号内不扫描）。
@@ -26,6 +26,8 @@ object XmlPrettyPrinter {
     fun diagnose(xml: String): LexicalError? {
         if (xml.isBlank() || xml.startsWith("Failed to decode")) return null
         val openTags = ArrayList<Pair<String, Int>>()
+        // 根元素闭合之后再出现元素/CDATA/声明就不成文档了；注释和处理指令在根外面是合法的
+        var rootClosed: String? = null
         var i = 0
         while (i < xml.length) {
             val lt = xml.indexOf('<', i)
@@ -38,6 +40,7 @@ object XmlPrettyPrinter {
                 }
 
                 xml.startsWith("<![CDATA[", lt) -> {
+                    rootClosed?.let { return LexicalError.at(xml, lt, "根元素 <$it> 之外还有 CDATA") }
                     val end = xml.indexOf("]]>", lt + 9)
                     if (end < 0) return LexicalError.at(xml, lt, "CDATA 没有闭合")
                     i = end + 3
@@ -50,6 +53,7 @@ object XmlPrettyPrinter {
                 }
 
                 xml.startsWith("<!", lt) -> {
+                    rootClosed?.let { return LexicalError.at(xml, lt, "根元素 <$it> 之外还有声明") }
                     val end = readTag(xml, lt)
                     if (end < 0) return LexicalError.at(xml, lt, "声明没有闭合")
                     i = end
@@ -65,10 +69,12 @@ object XmlPrettyPrinter {
                     if (opened.first != name) {
                         return LexicalError.at(xml, lt, "结束标签 </$name> 与 <${opened.first}> 不匹配")
                     }
+                    if (openTags.isEmpty()) rootClosed = name
                     i = end
                 }
 
                 else -> {
+                    rootClosed?.let { return LexicalError.at(xml, lt, "根元素 <$it> 之后还有第二个元素") }
                     val next = xml.getOrNull(lt + 1)
                     if (next == null || !next.isElementNameStart()) {
                         return LexicalError.at(xml, lt, "'<' 后面不是合法的标签名")
@@ -77,8 +83,10 @@ object XmlPrettyPrinter {
                     if (end < 0) return LexicalError.at(xml, lt, "标签没有闭合")
                     val body = xml.substring(lt + 1, end - 1)
                     unclosedQuote(body)?.let { return LexicalError.at(xml, lt, "属性引号 $it 没有闭合") }
-                    if (!body.endsWith("/")) {
-                        val name = tagName(body)
+                    val name = tagName(body)
+                    if (body.endsWith("/")) {
+                        if (openTags.isEmpty()) rootClosed = name
+                    } else {
                         if (name.isEmpty()) return LexicalError.at(xml, lt, "标签缺少名字")
                         openTags.add(name to lt)
                     }

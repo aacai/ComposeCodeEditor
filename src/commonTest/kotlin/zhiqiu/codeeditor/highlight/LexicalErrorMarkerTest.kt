@@ -25,7 +25,8 @@ class LexicalErrorMarkerTest {
         cache: HighlightCache,
         index: Int,
         theme: EditorTheme,
-    ) = cache.getAnnotatedLine(index, lines[index], theme).spanStyles
+        line: String = lines[index],
+    ) = cache.getAnnotatedLine(index, line, theme).spanStyles
         .filter { it.item.textDecoration == TextDecoration.Underline }
 
     @Test
@@ -79,6 +80,26 @@ class LexicalErrorMarkerTest {
         cache.setLexicalError(null)
         val cleared = cache.getAnnotatedLine(1, lines[1], theme)
         assertTrue(cleared.spanStyles.none { it.item.textDecoration == TextDecoration.Underline })
+    }
+
+    @Test
+    fun wholeDocumentResetsDropTheStaleMarker() {
+        // 撤销 / 整篇重排 / 换语言都会把缓存指向另一份内容，旧坐标盖的是别的字符
+        val theme = EditorTheme.dark()
+        val rewritten = listOf("{\"a\":1}", "tail")
+
+        listOf(
+            { cache: HighlightCache -> cache.rebuild(rewritten) },
+            { cache: HighlightCache -> cache.prefill(rewritten) },
+        ).forEach { reset ->
+            val cache = cache()
+            cache.setLexicalError(LexicalError(0, 7, 7, "多余的尾逗号"))
+            assertTrue(underlines(cache, 0, theme).isNotEmpty(), "重置前该看得见")
+
+            reset(cache)
+
+            assertTrue(underlines(cache, 0, theme, rewritten[0]).isEmpty(), "重置后不该留着")
+        }
     }
 
     @Test

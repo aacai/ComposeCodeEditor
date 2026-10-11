@@ -1492,6 +1492,37 @@ class NativeEditorViewModelTest {
         }
 
     @Test
+    fun inPlaceLineEditRecomputesTheMarker() =
+        runTest {
+            viewModel.loadContent("""{"a":1,}""", "t.json", EditorLanguage.JSON)
+            advanceUntilIdle()
+            assertEquals(7, markerUnderlines(0).single().start)
+
+            // 原地改同一行：缓冲实例不变，只有修订号在动，过期判定不能只看引用
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, """{"a":1}"""))
+            advanceUntilIdle()
+
+            assertTrue(markerUnderlines(0).isEmpty(), "改对之后旧标注必须消失")
+        }
+
+    @Test
+    fun aDiagnoseThatOutlivedItsSnapshotIsDiscarded() =
+        runTest {
+            viewModel.loadContent("""{"a":1,}""", "t.json", EditorLanguage.JSON)
+            // 停笔窗口刚走完：后台解析已排队但还没执行
+            testDispatcher.scheduler.advanceTimeBy(250)
+
+            // 解析期间用户改了同一行，缓冲区实例没换，只有修订号在动
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(0, """{"ab":1,}"""))
+            testDispatcher.scheduler.runCurrent()
+
+            assertTrue(markerUnderlines(0).isEmpty(), "那是一版过期结论，不能盖到当前内容上")
+
+            advanceUntilIdle()
+            assertEquals(8, markerUnderlines(0).single().start, "停笔后要按最新内容重新定位")
+        }
+
+    @Test
     fun errorAtTheEndOfTheDocumentIsStillVisible() =
         runTest {
             // 缺右括号，诊断点正落在 EOF 对应的空行上；不锚定就什么都看不见

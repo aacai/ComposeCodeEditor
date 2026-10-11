@@ -146,8 +146,7 @@ class NativeEditorViewModel(
         val diagnosable =
             DocumentFormatter.supports(snapshot.language) &&
                 snapshot.performanceMode.enableSyntaxHighlight &&
-                snapshot.originalText.length <= LEXICAL_DIAGNOSE_MAX_CHARS &&
-                _state.value.content === snapshot.content
+                snapshot.originalText.length <= LEXICAL_DIAGNOSE_MAX_CHARS
         val error = if (diagnosable) diagnoseDocument(snapshot) else null
         if (highlightCache.setLexicalError(error)) {
             _state.value =
@@ -168,8 +167,19 @@ class NativeEditorViewModel(
                     DocumentFormatter.diagnose(text, snapshot.language)?.anchorToText(text)
                 }.getOrNull()
             }
-        // 解析期间用户又改了内容：这一版结论已经过期，交给下一个去抖周期
-        return if (_state.value.content === snapshot.content) parsed else null
+        // 解析期间用户又改了内容或换了语言：这一版结论已经过期，交给下一个去抖周期
+        return if (isDiagnoseSnapshotCurrent(snapshot)) parsed else null
+    }
+
+    /**
+     * 快照是否仍然代表当前文档。
+     * 逐行编辑是原地改同一个 [ILineBuffer]，只比对象引用看不出来，必须连修订号一起比。
+     */
+    private fun isDiagnoseSnapshotCurrent(snapshot: NativeEditorState): Boolean {
+        val current = _state.value
+        return current.content === snapshot.content &&
+            current.contentRevision == snapshot.contentRevision &&
+            current.language == snapshot.language
     }
 
     /** 设置当前文件的来源 APK 信息（来自 APK 内 XML 时由编辑器传入）。 */
