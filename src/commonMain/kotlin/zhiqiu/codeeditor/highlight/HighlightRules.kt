@@ -9,6 +9,12 @@ data class HighlightRules(
     val blockCommentEnd: String?,
     val stringDelimiters: List<String>,
     val numberPattern: Regex,
+    /** 块注释是否可嵌套（Kotlin 可以，C 系不行）：嵌套语言里注释中再开注释要计入深度 */
+    val nestedBlockComments: Boolean = false,
+    /** 可跨行的字符串分隔符（Kotlin `"""`、Go 反引号等）：未闭合时把开串分隔符带进下一行 */
+    val multiLineStringDelimiters: Set<String> = emptySet(),
+    /** 普通字符串是否允许跨行（Shell/SQL 的单引号串）：允许时未闭合不算词法错误 */
+    val stringsMaySpanLines: Boolean = false,
 ) {
     companion object {
         fun forLanguage(language: EditorLanguage): HighlightRules =
@@ -157,6 +163,9 @@ data class HighlightRules(
                 blockCommentStart = "/*",
                 blockCommentEnd = "*/",
                 stringDelimiters = listOf("\"\"\"", "\""),
+                // Kotlin 块注释可嵌套，且 """ 原始字符串跨行
+                nestedBlockComments = true,
+                multiLineStringDelimiters = setOf("\"\"\""),
                 numberPattern = defaultNumber,
             )
 
@@ -252,7 +261,9 @@ data class HighlightRules(
                 lineComment = "//",
                 blockCommentStart = "/*",
                 blockCommentEnd = "*/",
-                stringDelimiters = listOf("\"", "'"),
+                // Java 15+ 文本块 """ ... """
+                stringDelimiters = listOf("\"\"\"", "\"", "'"),
+                multiLineStringDelimiters = setOf("\"\"\""),
                 numberPattern = cNumber,
             )
 
@@ -328,6 +339,7 @@ data class HighlightRules(
                 blockCommentStart = null,
                 blockCommentEnd = null,
                 stringDelimiters = listOf("\"\"\"", "'''", "\"", "'"),
+                multiLineStringDelimiters = setOf("\"\"\"", "'''"),
                 numberPattern = pythonNumber,
             )
 
@@ -409,6 +421,7 @@ data class HighlightRules(
                 blockCommentStart = "/*",
                 blockCommentEnd = "*/",
                 stringDelimiters = listOf("`", "\"", "'"),
+                multiLineStringDelimiters = setOf("`"),
                 numberPattern = defaultNumber,
             )
 
@@ -519,6 +532,7 @@ data class HighlightRules(
                 blockCommentStart = "/*",
                 blockCommentEnd = "*/",
                 stringDelimiters = listOf("`", "\"", "'"),
+                multiLineStringDelimiters = setOf("`"),
                 numberPattern = defaultNumber,
             )
 
@@ -907,6 +921,8 @@ data class HighlightRules(
                 blockCommentStart = "/*",
                 blockCommentEnd = "*/",
                 stringDelimiters = listOf("\"", "'", "`"),
+                // Go 的反引号原始字符串可以跨行
+                multiLineStringDelimiters = setOf("`"),
                 numberPattern =
                     Regex(
                         "\\b(0[xX][0-9a-fA-F_]+|0[oO]?[0-7_]+|0[bB][0-1_]+|\\d[0-9_]*(\\.\\d[0-9_]*)?([eE][+-]?\\d+)?i?)\\b",
@@ -1010,6 +1026,8 @@ data class HighlightRules(
                 blockCommentStart = "/*",
                 blockCommentEnd = "*/",
                 stringDelimiters = listOf("\""),
+                // Rust 的块注释可以一层套一层
+                nestedBlockComments = true,
                 numberPattern = rustNumber,
             )
 
@@ -1050,6 +1068,9 @@ data class HighlightRules(
                 blockCommentStart = "/*",
                 blockCommentEnd = "*/",
                 stringDelimiters = listOf("\"\"\"", "\""),
+                // Swift 的块注释可嵌套，多行字符串用三个双引号
+                nestedBlockComments = true,
+                multiLineStringDelimiters = setOf("\"\"\""),
                 numberPattern = swiftNumber,
             )
 
@@ -1102,6 +1123,8 @@ data class HighlightRules(
                 blockCommentStart = null,
                 blockCommentEnd = null,
                 stringDelimiters = listOf("\"", "'"),
+                // shell 的单引号串可以跨行续写，不能当成未闭合错误
+                stringsMaySpanLines = true,
                 numberPattern = sqlNumber,
             )
 
@@ -1218,6 +1241,8 @@ data class HighlightRules(
                 blockCommentStart = "/*",
                 blockCommentEnd = "*/",
                 stringDelimiters = listOf("'"),
+                // SQL 字符串字面量允许跨行
+                stringsMaySpanLines = true,
                 numberPattern = sqlNumber,
             )
 

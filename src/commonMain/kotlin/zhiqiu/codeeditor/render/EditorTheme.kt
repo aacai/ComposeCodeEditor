@@ -37,6 +37,8 @@ data class EditorTheme(
     val bracketMatchBackground: Color,
     /** 配对括号边框（对齐 editorBracketMatch.border） */
     val bracketMatchBorder: Color,
+    /** 词法错误（未闭合字符串、游离的块注释闭符），对齐 editor.errorForeground */
+    val error: Color = Color(0xFFD32F2F),
 ) {
     companion object {
         fun light(): EditorTheme =
@@ -62,6 +64,7 @@ data class EditorTheme(
                 bracketGuideActive = Color(0xFF7A7A7A),
                 bracketMatchBackground = Color(0x33000000),
                 bracketMatchBorder = Color(0xFFB9B9B9),
+                error = Color(0xFFD32F2F),
             )
 
         fun dark(): EditorTheme =
@@ -87,6 +90,7 @@ data class EditorTheme(
                 bracketGuideActive = Color(0xFF707070),
                 bracketMatchBackground = Color(0x33000000),
                 bracketMatchBorder = Color(0xFF888888),
+                error = Color(0xFFF48771),
             )
     }
 }
@@ -106,4 +110,5 @@ internal fun tokenToColor(
         TokenType.Punctuation -> theme.punctuation
         TokenType.Annotation -> theme.annotation
         TokenType.Plain -> theme.foreground
+        TokenType.Error -> theme.error
     }

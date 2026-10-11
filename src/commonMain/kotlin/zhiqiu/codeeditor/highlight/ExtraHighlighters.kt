@@ -613,7 +613,7 @@ internal class XmlSyntaxHighlighter : SyntaxHighlighter {
             val endPos = findCommentEnd(line, 0)
             if (endPos == -1) {
                 tokens.add(Token(0, line.length, TokenType.Comment))
-                return Pair(tokens, HighlightState(inBlockComment = true))
+                return Pair(tokens, HighlightState(commentDepth = 1))
             }
             tokens.add(Token(0, endPos, TokenType.Comment))
             pos = endPos
@@ -628,7 +628,7 @@ internal class XmlSyntaxHighlighter : SyntaxHighlighter {
                 val endPos = findCommentEnd(line, pos)
                 if (endPos == -1) {
                     tokens.add(Token(start, line.length, TokenType.Comment))
-                    return Pair(tokens, HighlightState(inBlockComment = true))
+                    return Pair(tokens, HighlightState(commentDepth = 1))
                 }
                 tokens.add(Token(start, endPos, TokenType.Comment))
                 pos = endPos
@@ -753,7 +753,7 @@ internal class XmlSyntaxHighlighter : SyntaxHighlighter {
             }
         }
 
-        return Pair(tokens, HighlightState(inBlockComment = false))
+        return Pair(tokens, HighlightState())
     }
 
     /** 查找注释结束位置 -->，返回结束后的位置。未找到返回 -1。 */

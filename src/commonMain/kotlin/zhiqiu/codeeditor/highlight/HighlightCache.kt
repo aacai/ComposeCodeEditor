@@ -3,6 +3,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import zhiqiu.codeeditor.render.EditorTheme
 import zhiqiu.codeeditor.render.tokenToColor
@@ -355,7 +356,7 @@ class HighlightCache(
                             append(line.substring(pos, s))
                         }
                     }
-                    withStyle(SpanStyle(color = tokenToColor(token, theme))) {
+                    withStyle(errorAwareStyle(token, theme)) {
                         append(line.substring(s, e))
                     }
                     pos = e
@@ -375,3 +376,20 @@ class HighlightCache(
     val size: Int
         get() = sortedLineTokens.size
 }
+
+/**
+ * 词法错误除了换色还要加下划线：红字在深色主题里容易和普通 token 混淆，
+ * 下划线才是「这里读不通」的确定信号。
+ */
+private fun errorAwareStyle(
+    token: Token,
+    theme: EditorTheme,
+): SpanStyle =
+    if (token.type == TokenType.Error) {
+        SpanStyle(
+            color = theme.error,
+            textDecoration = TextDecoration.Underline,
+        )
+    } else {
+        SpanStyle(color = tokenToColor(token, theme))
+    }

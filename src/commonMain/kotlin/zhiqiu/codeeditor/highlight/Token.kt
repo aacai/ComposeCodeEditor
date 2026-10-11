@@ -16,4 +16,7 @@ enum class TokenType {
     Punctuation,
     Plain,
     Annotation,
+
+    /** 词法错误：未闭合的字符串、没有配对的块注释闭符等。渲染端标红加下划线。 */
+    Error,
 }
