@@ -1188,6 +1188,9 @@ class NativeEditorViewModel(
         path: String,
         session: EditorSession?,
     ) {
+        // 发出指令就置 loading：查大小、等确认的这段时间文档还是空的，
+        // 宿主在这段时间采到的会话必须作废，否则会把上次的位置覆盖成第 0 行
+        _state.value = _state.value.copy(isLoading = true, error = null)
         viewModelScope.launch {
             // 先检查文件大小，判断是否需要显示警告
             try {
@@ -1400,7 +1403,8 @@ class NativeEditorViewModel(
     private fun handleCancelLoadLargeFile() {
         pendingFilePath = null
         pendingSession = null
-        _state.value = _state.value.copy(showLargeFileWarning = null)
+        // 载入被用户拒掉：清空 loading，否则界面永远卡在「正在加载」
+        _state.value = _state.value.copy(isLoading = false, showLargeFileWarning = null)
     }
 
     private fun handleToggleFold(startLine: Int) {
@@ -1963,6 +1967,8 @@ class NativeEditorViewModel(
         readOnly: Boolean = false,
         session: EditorSession? = null,
     ) {
+        // 与磁盘载入同理：装载期间置位，宿主据此作废采到的空会话
+        _state.value = _state.value.copy(isLoading = true, error = null)
         viewModelScope.launch {
             try {
                 val separator = LineSeparator.detect(text)
@@ -1996,6 +2002,7 @@ class NativeEditorViewModel(
         filePath: String,
         session: EditorSession? = null,
     ) {
+        _state.value = _state.value.copy(isLoading = true, error = null)
         viewModelScope.launch {
             try {
                 val diskText =

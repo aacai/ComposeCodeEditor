@@ -1849,6 +1849,21 @@ class NativeEditorViewModelTest {
         }
 
     @Test
+    fun loadContentMarksItselfBusyBeforeTheDocumentIsInstalled() =
+        runTest {
+            // 宿主的会话自动保存依赖这个契约：装载中途采到的空文档必须作废，
+            // 否则会把上次的位置覆盖成第 0 行
+            viewModel.loadContent(FOLD_DOC, "Session.kt", EditorLanguage.Kotlin)
+            assertTrue(viewModel.state.value.isLoading)
+            assertEquals(0, viewModel.currentSession().lineCount)
+
+            advanceUntilIdle()
+
+            assertFalse(viewModel.state.value.isLoading)
+            assertEquals(6, viewModel.currentSession().lineCount)
+        }
+
+    @Test
     fun loadContentKeepsTheLanguageTheHostChose() =
         runTest {
             viewModel.loadContent(
