@@ -346,7 +346,11 @@ class NativeEditorViewModel(
             }
 
             is NativeEditorEvent.CutSelection -> {
-                handleCutSelection()
+                handleDeleteSelection()
+            }
+
+            is NativeEditorEvent.DeleteSelection -> {
+                handleDeleteSelection()
             }
 
             is NativeEditorEvent.CutCurrentLine -> {
@@ -1851,9 +1855,12 @@ class NativeEditorViewModel(
         }
     }
 
-    private fun handleCutSelection() {
+    private fun handleDeleteSelection() {
         // 实际写入剪贴板由界面层完成；此处仅删除选区内容。
-        applyReplacement("", _state.value.selection)
+        // 没有非空选区时一律不动刀：否则「删除」会退化成在光标处整行重写，
+        // 白白压一条撤销记录并把文档标脏。
+        val sel = _state.value.selection?.takeIf { it.isNotEmpty() } ?: return
+        applyReplacement("", sel)
     }
 
     private fun handleCutCurrentLine() {

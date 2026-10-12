@@ -7,6 +7,56 @@ import kotlin.test.assertNull
 
 /** [EditorKeymap] 单测：快捷键识别与「不拦截」边界。 */
 class EditorKeymapTest {
+    private fun edit(
+        key: Key,
+        shift: Boolean = false,
+        ctrl: Boolean = false,
+        alt: Boolean = false,
+        utf16: Int = 0,
+    ): SelectionEdit? = EditorKeymap.resolveSelectionEdit(key, shift, ctrl, alt, utf16)
+
+    @Test
+    fun unmodifiedBackspaceAndDeleteMeanDeleteTheSelection() {
+        assertEquals(SelectionEdit.Delete, edit(Key.Backspace))
+        assertEquals(SelectionEdit.Delete, edit(Key.Delete))
+        // Shift+Delete 是终端的粘贴语义；Ctrl+Delete 是删词，都不该被当成「删整段选区」
+        assertNull(edit(Key.Delete, shift = true))
+        assertNull(edit(Key.Backspace, ctrl = true))
+        assertNull(edit(Key.Delete, alt = true))
+    }
+
+    @Test
+    fun clipboardCombinationsRouteToTheHost() {
+        assertEquals(SelectionEdit.Copy, edit(Key.C, ctrl = true))
+        assertEquals(SelectionEdit.Cut, edit(Key.X, ctrl = true))
+        assertEquals(SelectionEdit.Paste, edit(Key.V, ctrl = true))
+        assertEquals(SelectionEdit.Copy, edit(Key.C, shift = true, ctrl = true))
+        assertNull(edit(Key.C, alt = true, ctrl = true))
+        assertNull(edit(Key.A, ctrl = true), "全选不是选区编辑")
+    }
+
+    @Test
+    fun aVisibleCharacterTypedOverTheSelectionBecomesAnInsert() {
+        assertEquals(SelectionEdit.Insert("x"), edit(Key.X, utf16 = 'x'.code))
+        assertEquals(SelectionEdit.Insert("A"), edit(Key.A, shift = true, utf16 = 'A'.code))
+    }
+
+    @Test
+    fun controlCodesAndNavigationKeysAreNeverTypedCharacters() {
+        // 功能键在很多平台上照样带一个码元过来：不能当成「用户敲了一个字符」
+        assertNull(edit(Key.X, utf16 = 0))
+        assertNull(edit(Key.X, utf16 = 8))
+        assertNull(edit(Key.X, utf16 = 10))
+        assertNull(edit(Key.X, utf16 = 0x7F))
+        assertNull(edit(Key.X, utf16 = 0xFFFF))
+        assertNull(edit(Key.X, utf16 = 0xFFFD))
+        assertNull(edit(Key.X, utf16 = Character.MIN_SURROGATE.code))
+        assertNull(edit(Key.DirectionLeft, utf16 = 'a'.code))
+        assertNull(edit(Key.Tab, utf16 = '\t'.code))
+        assertNull(edit(Key.Enter, utf16 = 13))
+        assertNull(edit(Key.Escape, utf16 = 27))
+    }
+
     private fun map(
         key: Key,
         shift: Boolean = false,

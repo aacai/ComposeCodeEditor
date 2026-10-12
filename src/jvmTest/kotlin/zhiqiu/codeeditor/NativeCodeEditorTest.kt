@@ -1872,13 +1872,19 @@ class NativeCodeEditorTest {
 
         /** 触发一次剪切事件（盒选区删除走的就是这条路）。 */
         data object Cut : KeyboardStep()
+
+        /** 按住 Ctrl/Cmd 走一个键：Ctrl+C/X/V 这类剪贴板组合。 */
+        data class WithCtrl(
+            val key: Key,
+        ) : KeyboardStep()
     }
 
-    /** 每个步骤结束时的光标、选区，以及最后整篇内容。 */
+    /** 每个步骤结束时的光标、选区、最后整篇内容，以及宿主剪贴板回调被触发的次数。 */
     private data class KeyboardProbe(
         val carets: List<Pair<Int, Int>>,
         val selections: List<String?>,
         val lines: List<String>,
+        val clipboardCalls: List<String> = emptyList(),
     )
 
     /**
@@ -1896,6 +1902,7 @@ class NativeCodeEditorTest {
         Dispatchers.setMain(UnconfinedTestDispatcher(scheduler))
         val carets = mutableListOf<Pair<Int, Int>>()
         val selections = mutableListOf<String?>()
+        val clipboardCalls = mutableListOf<String>()
         var finalLines = emptyList<String>()
         val file = File.createTempFile("editor-nav", ".kt")
         try {
@@ -1929,6 +1936,23 @@ class NativeCodeEditorTest {
                         },
                         onSelectionCleared = {
                             viewModel.onEvent(NativeEditorEvent.SelectionCleared)
+                        },
+                        onEditorShortcut = { shortcut ->
+                            shortcut.toEditorEvent()?.let(viewModel::onEvent)
+                        },
+                        // 宿主真实接线：复制/剪切/粘贴由宿主读写剪贴板，这里只记录被触发
+                        onCopy = { clipboardCalls += "copy" },
+                        onCut = {
+                            clipboardCalls += "cut"
+                            viewModel.onEvent(NativeEditorEvent.CutSelection)
+                        },
+                        onPaste = {
+                            clipboardCalls += "paste"
+                            viewModel.onEvent(NativeEditorEvent.PasteSelection("P"))
+                        },
+                        onSelectionTyped = { text ->
+                            clipboardCalls += "type:$text"
+                            viewModel.onEvent(NativeEditorEvent.PasteSelection(text))
                         },
                         onFontSizeChanged = {},
                         highlightCache = viewModel.highlightCache,
@@ -1973,6 +1997,9 @@ class NativeCodeEditorTest {
 
                         is KeyboardStep.Cut ->
                             viewModel.onEvent(NativeEditorEvent.CutSelection)
+                        is KeyboardStep.WithCtrl -> field.performKeyInput {
+                            withKeyDown(Key.CtrlLeft) { pressKey(step.key) }
+                        }
                         is KeyboardStep.Select -> {
                             viewModel.onEvent(
                                 NativeEditorEvent.SelectionStarted(step.anchorLine, step.anchorCol),
@@ -1997,7 +2024,7 @@ class NativeCodeEditorTest {
             Dispatchers.resetMain()
             file.delete()
         }
-        return KeyboardProbe(carets, selections, finalLines)
+        return KeyboardProbe(carets, selections, finalLines, clipboardCalls)
     }
 
     @Test
@@ -2116,5 +2143,88 @@ class NativeCodeEditorTest {
             probe.lines,
             "每行只挖掉第 4 列那一个字符，短的末行不动",
         )
+    }
+
+    @Test
+    fun backspaceOnACrossLineSelectionDeletesItWithoutTouchingTheClipboard() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 0,
+                startColumn = 0,
+                steps =
+                    listOf(
+                        KeyboardStep.Extend(listOf(Key.DirectionDown)),
+                        KeyboardStep.Press(Key.Backspace),
+                    ),
+            )
+        assertEquals(listOf("0:0-1:0", null), probe.selections)
+        assertEquals(
+            listOf("    println(1)", "}", ""),
+            probe.lines,
+            "选区从行首罩到下一行行首：整行连同换行一起消失",
+        )
+        assertTrue(probe.clipboardCalls.isEmpty(), "删除不写剪贴板，那是剪切的事")
+    }
+
+    @Test
+    fun ctrlChandsACrossLineSelectionToTheHostClipboard() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 0,
+                startColumn = 0,
+                steps =
+                    listOf(
+                        KeyboardStep.Extend(listOf(Key.DirectionDown)),
+                        KeyboardStep.WithCtrl(Key.C),
+                    ),
+            )
+        assertEquals(listOf("copy"), probe.clipboardCalls)
+        assertEquals(
+            listOf("fun main() {", "    println(1)", "}", ""),
+            probe.lines,
+            "复制不动文档",
+        )
+    }
+
+    @Test
+    fun typingACharacterOverACrossLineSelectionReplacesIt() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 0,
+                startColumn = 0,
+                steps =
+                    listOf(
+                        KeyboardStep.Extend(listOf(Key.DirectionDown)),
+                        KeyboardStep.Press(Key.X),
+                    ),
+            )
+        assertEquals(listOf("type:x"), probe.clipboardCalls)
+        assertEquals(listOf("x    println(1)", "}", ""), probe.lines)
+    }
+
+    @Test
+    fun backspaceOnABoxRemovesOnlyTheColumnWindow() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 0,
+                startColumn = 4,
+                steps =
+                    listOf(
+                        KeyboardStep.Box(listOf(Key.DirectionDown)),
+                        KeyboardStep.Box(listOf(Key.DirectionRight)),
+                        KeyboardStep.Box(listOf(Key.DirectionDown)),
+                        KeyboardStep.Press(Key.Backspace),
+                    ),
+            )
+        assertEquals(
+            listOf("fun ain() {", "    rintln(1)", "}", ""),
+            probe.lines,
+            "和剪切同一个列窗口",
+        )
+        assertTrue(probe.clipboardCalls.isEmpty(), "盒选区上按删除不该顺手抄一份进剪贴板")
     }
 }

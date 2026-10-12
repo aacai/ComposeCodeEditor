@@ -159,6 +159,9 @@ sealed interface NativeEditorEvent {
 
     data object CutSelection : NativeEditorEvent
 
+    /** 删除选区内容，不碰剪贴板（Backspace/Delete）。 */
+    data object DeleteSelection : NativeEditorEvent
+
     data object CutCurrentLine : NativeEditorEvent
 
     data class PasteSelection(
@@ -191,5 +194,6 @@ fun EditorShortcut.toEditorEvent(): NativeEditorEvent? =
         EditorShortcut.Outdent -> NativeEditorEvent.OutdentCurrentLine
         EditorShortcut.Close -> NativeEditorEvent.DismissOverlay
         EditorShortcut.Format -> NativeEditorEvent.FormatDocument
+        EditorShortcut.DeleteSelection -> NativeEditorEvent.DeleteSelection
         EditorShortcut.GoToLine -> null
     }

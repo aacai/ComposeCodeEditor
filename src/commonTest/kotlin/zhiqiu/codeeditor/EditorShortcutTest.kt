@@ -22,6 +22,7 @@ class EditorShortcutTest {
                 EditorShortcut.Outdent to NativeEditorEvent.OutdentCurrentLine,
                 EditorShortcut.Close to NativeEditorEvent.DismissOverlay,
                 EditorShortcut.Format to NativeEditorEvent.FormatDocument,
+                EditorShortcut.DeleteSelection to NativeEditorEvent.DeleteSelection,
             ),
             EditorShortcut.entries.associateWith { it.toEditorEvent() }.filterValues { it != null },
         )

@@ -72,6 +72,7 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.utf16CodePoint
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.collection.MutableIntObjectMap
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -129,6 +130,7 @@ import zhiqiu.codeeditor.text.FoldViewport
 import zhiqiu.codeeditor.highlight.HighlightCache
 import zhiqiu.codeeditor.buffer.ILineBuffer
 import zhiqiu.codeeditor.buffer.PerformanceMode
+import zhiqiu.codeeditor.text.SelectionEdit
 import zhiqiu.codeeditor.text.SelectionRange
 import zhiqiu.codeeditor.text.WordBoundary
 import zhiqiu.codeeditor.render.caretXBeforeScroll
@@ -404,6 +406,11 @@ fun NativeCodeEditor(
     onCut: () -> Unit = {},
     onPaste: () -> Unit = {},
     onPasteText: (String) -> Unit = {},
+    /**
+     * 在跨行/盒选区上键入可见字符：整个选区被这段文本替换。
+     * 单行选区不经过这里 —— 它已镜像进输入层，由文本字段自己处理。
+     */
+    onSelectionTyped: (String) -> Unit = {},
     onSelectAll: () -> Unit = {},
     onSelectLine: (line: Int) -> Unit = {},
     onToggleFold: (startLine: Int) -> Unit = {},
@@ -1796,6 +1803,10 @@ val (rawLine, _) =
                             onEnterKey = onEnterKey,
                             onEditorShortcut = onEditorShortcut,
                             onPasteText = onPasteText,
+                            onCopy = onCopy,
+                            onCut = onCut,
+                            onPaste = onPaste,
+                            onSelectionTyped = onSelectionTyped,
                             horizontalScrollState = horizontalScrollState,
                             charWidthPx = sliceCharWidthPx,
                             viewportWidthPx = with(density) { viewportWidth.toPx() },
@@ -2579,6 +2590,10 @@ private fun EditorInputLayerHost(
     onEnterKey: (line: Int, column: Int) -> Unit,
     onEditorShortcut: (EditorShortcut) -> Unit,
     onPasteText: (String) -> Unit,
+    onCopy: () -> Unit,
+    onCut: () -> Unit,
+    onPaste: () -> Unit,
+    onSelectionTyped: (String) -> Unit,
     horizontalScrollState: ScrollState,
     charWidthPx: Float = 0f,
     viewportWidthPx: Float = 0f,
@@ -2600,6 +2615,18 @@ private fun EditorInputLayerHost(
         selection?.normalize()?.takeIf {
             it.startLine == it.endLine && it.startLine == lineIndex
         }
+    // 跨行或盒选区：输入层里只有当前这一行，剪贴板与删除必须由宿主按整篇文档处理。
+    val unmirroredSelection = selection != null && selectionOnLine == null
+    val onSelectionEdit: (SelectionEdit) -> Boolean = { edit ->
+        when (edit) {
+            SelectionEdit.Copy -> onCopy()
+            SelectionEdit.Cut -> onCut()
+            SelectionEdit.Paste -> onPaste()
+            SelectionEdit.Delete -> onEditorShortcut(EditorShortcut.DeleteSelection)
+            is SelectionEdit.Insert -> onSelectionTyped(edit.text)
+        }
+        true
+    }
     // 方向键导航：落点由纯函数算，结果发回既有的光标/选区回调，四个宿主屏幕的接线不用改。
     val onNavigationKey: (EditorNavigation) -> Boolean = { nav ->
         val outcome =
@@ -2642,6 +2669,8 @@ private fun EditorInputLayerHost(
         onEnterKey = onEnterKey,
         onEditorShortcut = onEditorShortcut,
         onPasteText = onPasteText,
+        unmirroredSelection = unmirroredSelection,
+        onSelectionEdit = onSelectionEdit,
         horizontalScrollState = horizontalScrollState,
         charWidthPx = charWidthPx,
         viewportWidthPx = viewportWidthPx,
@@ -2686,6 +2715,10 @@ private fun InputLayer(
     onEnterKey: (line: Int, column: Int) -> Unit,
     onEditorShortcut: (EditorShortcut) -> Unit = {},
     onPasteText: (String) -> Unit = {},
+    // 选区没镜像进本层（跨行或盒）时为 true：此时本层的缓冲只有当前这一行，
+    // 剪贴板与删除/键入必须交回编辑器按整篇文档处理，不能由 BasicTextField 自己动刀。
+    unmirroredSelection: Boolean = false,
+    onSelectionEdit: (SelectionEdit) -> Boolean = { false },
     horizontalScrollState: ScrollState,
     charWidthPx: Float = 0f,
     viewportWidthPx: Float = 0f,
@@ -2743,6 +2776,8 @@ private fun InputLayer(
     val latestOnEditorShortcut by rememberUpdatedState(onEditorShortcut)
     val latestOnNavigationKey by rememberUpdatedState(onNavigationKey)
     val latestOnPasteText by rememberUpdatedState(onPasteText)
+    val latestUnmirroredSelection by rememberUpdatedState(unmirroredSelection)
+    val latestOnSelectionEdit by rememberUpdatedState(onSelectionEdit)
     // 点击映射用「当前窗口/字宽」而非字段内部状态，保证超长行滚到行尾后点击列始终正确（VSCode 行为）
     val latestWinStart by rememberUpdatedState(winStart)
     val latestWinEnd by rememberUpdatedState(winEnd)
@@ -3082,8 +3117,20 @@ private fun InputLayer(
                     )
                     if (shortcut != null) {
                         latestOnEditorShortcut(shortcut)
-                        true
-                    } else if (keyEvent.key == Key.Tab) {
+                        return@onPreviewKeyEvent true
+                    }
+                    if (latestUnmirroredSelection) {
+                        val edit =
+                            EditorKeymap.resolveSelectionEdit(
+                                key = keyEvent.key,
+                                shift = keyEvent.isShiftPressed,
+                                ctrlOrMeta = keyEvent.isCtrlPressed || keyEvent.isMetaPressed,
+                                alt = keyEvent.isAltPressed,
+                                typedUtf16 = keyEvent.utf16CodePoint,
+                            )
+                        if (edit != null) return@onPreviewKeyEvent latestOnSelectionEdit(edit)
+                    }
+                    if (keyEvent.key == Key.Tab) {
                         val spaces = " ".repeat(tabSize)
                         textFieldState.edit {
                             val start = selection.min

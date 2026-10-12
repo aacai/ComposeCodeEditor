@@ -352,6 +352,51 @@ class NativeEditorViewModelTest {
         }
 
     @Test
+    fun testDeleteSelectionRemovesACrossLineSelectionAndUndoes() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("fun main() {\n    println(1)\n}"))
+            viewModel.onEvent(NativeEditorEvent.SelectionStarted(0, 4))
+            viewModel.onEvent(NativeEditorEvent.SelectionUpdated(1, 4))
+
+            viewModel.onEvent(NativeEditorEvent.DeleteSelection)
+
+            assertEquals("fun println(1)\n}", viewModel.state.value.content.getText())
+            assertNull(viewModel.state.value.selection)
+
+            viewModel.onEvent(NativeEditorEvent.Undo)
+            assertEquals(
+                "fun main() {\n    println(1)\n}",
+                viewModel.state.value.content.getText(),
+            )
+        }
+
+    @Test
+    fun testDeleteSelectionWithoutASelectionLeavesTheDocumentClean() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta"))
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(1, 2))
+            val before = viewModel.state.value
+
+            viewModel.onEvent(NativeEditorEvent.DeleteSelection)
+            viewModel.onEvent(NativeEditorEvent.CutSelection)
+
+            assertEquals("alpha\nbeta", viewModel.state.value.content.getText())
+            assertEquals(before, viewModel.state.value, "没有选区时删除必须整状态都不动")
+        }
+
+    @Test
+    fun testDeleteSelectionOnAZeroWidthBoxIsANoOp() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta\ngamma"))
+            viewModel.onEvent(NativeEditorEvent.SelectionBoxChanged(0, 2, 2, 2))
+            val before = viewModel.state.value
+
+            viewModel.onEvent(NativeEditorEvent.DeleteSelection)
+
+            assertEquals(before, viewModel.state.value, "宽度为 0 的盒子没有内容可删，也不能压撤销")
+        }
+
+    @Test
     fun testPasteIntoColumnarSelectionWritesTheWindowOnEveryRow() =
         runTest {
             viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta\ngamma"))
