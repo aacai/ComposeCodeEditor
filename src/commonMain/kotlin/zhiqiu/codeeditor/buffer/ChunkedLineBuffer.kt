@@ -45,16 +45,19 @@ class ChunkedLineBuffer(
                 var lineIndex = 0
                 val newline = '\n'.code.toByte()
 
+                // 偏移表按「块号 -> 该块首行的起始字节」记录：块 0 从 0 开始，之后每凑满
+                // chunkSize 行记一次。原来在循环顶部逐字节 put，同一条行的每个字节都覆盖一次，
+                // 最终记下的是该行结尾换行的位置，于是每块首行读出来是空、整块内容错位一行。
+                lineOffsets.put(0, 0L)
                 while (!source.exhausted()) {
-                    if (lineIndex % chunkSize == 0) {
-                        lineOffsets.put(lineIndex / chunkSize, offset)
-                    }
-
                     val byte = source.readByte()
                     offset++
 
                     if (byte == newline) {
                         lineIndex++
+                        if (lineIndex % chunkSize == 0) {
+                            lineOffsets.put(lineIndex / chunkSize, offset)
+                        }
                     }
                 }
 
@@ -82,36 +85,28 @@ class ChunkedLineBuffer(
             throw IndexOutOfBoundsException("Line index: $index, Line count: $lineCount")
         }
 
-        val effectiveIndex = resolveEditIndex(index)
+        // 沿时间轴倒着走，把「当前显示行号」还原成这次编辑发生当时的行号：
+        // 插入/删除会移动其后的行，插入行与改写行则是内容覆盖，命中即返回。
+        // 原来的正向映射方向反了（加变成减），于是大文件里按一次回车就丢两行、
+        // 重复一行，保存即写坏文件。
+        var rawIndex = index
+        for (i in editOps.lastIndex downTo 0) {
+            when (val op = editOps[i]) {
+                is EditOp.ModifyLine -> if (rawIndex == op.index) return op.newText
+                is EditOp.InsertLine ->
+                    if (rawIndex == op.index) return op.line
+                    else if (rawIndex > op.index) rawIndex--
 
-        val insertOp = editOps.filterIsInstance<EditOp.InsertLine>().find { it.effectiveIndex == index }
-        if (insertOp != null) return insertOp.line
+                is EditOp.DeleteLine -> if (rawIndex >= op.index) rawIndex++
+            }
+        }
 
-        val chunkIndex = effectiveIndex / chunkSize
+        val chunkIndex = rawIndex / chunkSize
         ensureChunkLoaded(chunkIndex)
 
         val chunk = loadedChunks[chunkIndex] ?: return ""
-        val localIndex = effectiveIndex % chunkSize
-        val rawLine = if (localIndex < chunk.size) chunk[localIndex] else ""
-
-        val modifyOp = editOps.filterIsInstance<EditOp.ModifyLine>().find { it.effectiveIndex == index }
-        return modifyOp?.newText ?: rawLine
-    }
-
-    private fun resolveEditIndex(originalIndex: Int): Int {
-        var effectiveIndex = originalIndex
-        for (op in editOps.sortedBy { it.timestamp }) {
-            when (op) {
-                is EditOp.InsertLine -> {
-                    if (op.index <= effectiveIndex) effectiveIndex++
-                }
-                is EditOp.DeleteLine -> {
-                    if (op.index < effectiveIndex) effectiveIndex--
-                }
-                else -> {}
-            }
-        }
-        return effectiveIndex
+        val localIndex = rawIndex % chunkSize
+        return if (localIndex < chunk.size) chunk[localIndex] else ""
     }
 
     override fun getLines(): List<String> {
@@ -281,13 +276,12 @@ class ChunkedLineBuffer(
     private sealed class EditOp {
         abstract val timestamp: Long
 
+        /** index 为写入当时的显示行号。 */
         class InsertLine(
             val index: Int,
             val line: String,
             override val timestamp: Long,
-        ) : EditOp() {
-            val effectiveIndex = index
-        }
+        ) : EditOp()
 
         class DeleteLine(
             val index: Int,
@@ -295,7 +289,7 @@ class ChunkedLineBuffer(
         ) : EditOp()
 
         class ModifyLine(
-            val effectiveIndex: Int,
+            val index: Int,
             val newText: String,
             override val timestamp: Long,
         ) : EditOp()
