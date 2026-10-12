@@ -683,6 +683,84 @@ class NativeEditorCoreTest {
         assertEquals(0..9, range.getSelectedRangeInLine(3))
     }
 
+    // ==================== ColumnarSelectionTest ====================
+
+    @Test
+    fun columnarSelectionTakesTheSameColumnWindowFromEveryLine() {
+        val lines = listOf("alpha", "beta", "gamma", "delta")
+        val box = SelectionRange(0, 1, 3, 4, columnar = true)
+
+        assertEquals("lph\neta\namm\nelt", box.getSelectedText(lines))
+    }
+
+    @Test
+    fun columnarSelectionLeavesTooShortLinesEmpty() {
+        val lines = listOf("alpha", "b", "gamma")
+        val box = SelectionRange(0, 3, 2, 6, columnar = true)
+
+        assertEquals("ha\n\nma", box.getSelectedText(lines), "行不够长就选不到东西，但盒子仍占一行")
+    }
+
+    @Test
+    fun columnarSelectionNormalizesRowsAndColumnsIndependently() {
+        val box = SelectionRange(3, 4, 0, 1, columnar = true).normalize()
+
+        assertEquals(0, box.startLine)
+        assertEquals(1, box.startCol)
+        assertEquals(3, box.endLine)
+        assertEquals(4, box.endCol)
+        assertTrue(box.columnar, "规整不能把盒选区退回成普通选区")
+    }
+
+    @Test
+    fun columnarContainsUsesTheColumnWindow() {
+        val box = SelectionRange(0, 2, 2, 5, columnar = true)
+
+        assertTrue(box.contains(0, 2))
+        assertTrue(box.contains(1, 4))
+        assertTrue(box.contains(2, 2))
+        assertFalse(box.contains(1, 1), "盒子左侧之外不算选中")
+        assertFalse(box.contains(1, 5), "endCol 是开区间")
+        assertFalse(box.contains(3, 3), "盒子之下不算选中")
+        // 同一几何在普通选区里是「首行到行尾 + 中间整行」，行首当然算选中
+        assertTrue(SelectionRange(0, 2, 2, 5).contains(1, 0))
+    }
+
+    @Test
+    fun columnarSelectedRangeIsTheWindowOnEveryRow() {
+        val box = SelectionRange(0, 2, 2, 5, columnar = true)
+
+        assertEquals(2..4, box.getSelectedRangeInLine(0))
+        assertEquals(2..4, box.getSelectedRangeInLine(1))
+        assertEquals(2..4, box.getSelectedRangeInLine(2))
+        assertNull(box.getSelectedRangeInLine(3))
+        assertNull(box.getSelectedRangeInLine(-1))
+    }
+
+    @Test
+    fun zeroWidthBoxSelectsNothing() {
+        val box = SelectionRange(0, 3, 2, 3, columnar = true)
+
+        assertFalse(box.isNotEmpty(), "宽度为 0 的盒子一个字符都没选中")
+        assertEquals("", box.getSelectedText(listOf("alpha", "beta", "gamma")))
+        assertNull(box.getSelectedRangeInLine(1))
+    }
+
+    @Test
+    fun singleRowBoxStillSelectsItsWindow() {
+        val box = SelectionRange(1, 0, 1, 4, columnar = true)
+
+        assertTrue(box.isNotEmpty())
+        assertEquals("beta", box.getSelectedText(listOf("alpha", "beta", "gamma")))
+    }
+
+    @Test
+    fun columnarRowsBeyondDocumentEndSelectNothing() {
+        val box = SelectionRange(5, 0, 10, 5, columnar = true)
+
+        assertEquals("", box.getSelectedText(listOf("hello")))
+    }
+
     // ==================== SelectionDragTest ====================
 
     @Test

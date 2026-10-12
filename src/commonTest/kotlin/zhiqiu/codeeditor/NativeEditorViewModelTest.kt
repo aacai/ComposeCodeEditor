@@ -302,6 +302,85 @@ class NativeEditorViewModelTest {
         }
 
     @Test
+    fun testSelectionBoxChangedStoresColumnarSelection() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta\ngamma\ndelta"))
+
+            viewModel.onEvent(NativeEditorEvent.SelectionBoxChanged(0, 1, 2, 4))
+
+            val state = viewModel.state.value
+            assertEquals(SelectionRange(0, 1, 2, 4, columnar = true), state.selection)
+            assertEquals(2, state.cursorLine, "光标停在盒子焦点端")
+            assertEquals(4, state.cursorColumn)
+        }
+
+    @Test
+    fun testZeroWidthBoxIsKeptUntilItCollapsesToAPoint() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta\ngamma"))
+
+            // 第一次按向下：盒子只有行高、没有列宽
+            viewModel.onEvent(NativeEditorEvent.SelectionBoxChanged(0, 2, 1, 2))
+            val box = assertNotNull(viewModel.state.value.selection, "零宽盒子要留着，下一次按左右才有支点")
+            assertTrue(box.columnar)
+            assertFalse(box.isNotEmpty())
+
+            // 走回锚点：盒子塌成一点，这时才该清选区
+            viewModel.onEvent(NativeEditorEvent.SelectionBoxChanged(0, 2, 0, 2))
+            assertNull(viewModel.state.value.selection)
+            assertEquals(0, viewModel.state.value.cursorLine)
+            assertEquals(2, viewModel.state.value.cursorColumn, "塌成一点时光标停在盒子的焦点端")
+        }
+
+    @Test
+    fun testCutColumnarSelectionDeletesOnlyTheColumnWindow() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta\ngamma"))
+            viewModel.onEvent(NativeEditorEvent.SelectionBoxChanged(0, 1, 2, 4))
+
+            viewModel.onEvent(NativeEditorEvent.CutSelection)
+
+            assertEquals("aa\nb\nga", viewModel.state.value.content.getText())
+            assertNull(viewModel.state.value.selection)
+            assertTrue(viewModel.state.value.canUndo)
+
+            viewModel.onEvent(NativeEditorEvent.Undo)
+            assertEquals("alpha\nbeta\ngamma", viewModel.state.value.content.getText())
+
+            viewModel.onEvent(NativeEditorEvent.Redo)
+            assertEquals("aa\nb\nga", viewModel.state.value.content.getText())
+        }
+
+    @Test
+    fun testPasteIntoColumnarSelectionWritesTheWindowOnEveryRow() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta\ngamma"))
+            viewModel.onEvent(NativeEditorEvent.SelectionBoxChanged(0, 1, 2, 2))
+
+            viewModel.onEvent(NativeEditorEvent.PasteSelection("X"))
+
+            assertEquals("aXpha\nbXta\ngXmma", viewModel.state.value.content.getText())
+            val state = viewModel.state.value
+            assertEquals(2, state.cursorLine)
+            assertEquals(2, state.cursorColumn)
+
+            viewModel.onEvent(NativeEditorEvent.Undo)
+            assertEquals("alpha\nbeta\ngamma", viewModel.state.value.content.getText())
+        }
+
+    @Test
+    fun testMultiLinePasteIntoBoxFallsBackToLinearReplacement() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta\ngamma"))
+            viewModel.onEvent(NativeEditorEvent.SelectionBoxChanged(0, 1, 2, 4))
+
+            viewModel.onEvent(NativeEditorEvent.PasteSelection("X\nY"))
+
+            // 多行剪贴板不逐行铺开：按盒子两端的线性区间替换，行数是普通选区的结果
+            assertEquals("aX\nYa", viewModel.state.value.content.getText())
+        }
+
+    @Test
     fun testLineContentChangedPreservesOtherLines() =
         runTest {
             viewModel.onEvent(NativeEditorEvent.ContentChanged("a\nb\nc\nd\ne"))

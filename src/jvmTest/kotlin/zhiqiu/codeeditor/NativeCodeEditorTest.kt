@@ -1866,6 +1866,12 @@ class NativeCodeEditorTest {
 
         /** 按住 Shift 走方向键（Compose 测试用 withKeyDown 合成修饰键）。 */
         data class Extend(val keys: List<Key>) : KeyboardStep()
+
+        /** 按住 Shift+Alt 走方向键：列（盒）选区。 */
+        data class Box(val keys: List<Key>) : KeyboardStep()
+
+        /** 触发一次剪切事件（盒选区删除走的就是这条路）。 */
+        data object Cut : KeyboardStep()
     }
 
     /** 每个步骤结束时的光标、选区，以及最后整篇内容。 */
@@ -1916,6 +1922,11 @@ class NativeCodeEditorTest {
                         onSelectionUpdated = { line, col ->
                             viewModel.onEvent(NativeEditorEvent.SelectionUpdated(line, col))
                         },
+                        onSelectionBoxChanged = { anchorLine, anchorCol, focusLine, focusCol ->
+                            viewModel.onEvent(
+                                NativeEditorEvent.SelectionBoxChanged(anchorLine, anchorCol, focusLine, focusCol),
+                            )
+                        },
                         onSelectionCleared = {
                             viewModel.onEvent(NativeEditorEvent.SelectionCleared)
                         },
@@ -1951,6 +1962,17 @@ class NativeCodeEditorTest {
                                 step.keys.forEach { pressKey(it) }
                             }
                         }
+
+                        is KeyboardStep.Box -> field.performKeyInput {
+                            withKeyDown(Key.ShiftLeft) {
+                                withKeyDown(Key.AltLeft) {
+                                    step.keys.forEach { pressKey(it) }
+                                }
+                            }
+                        }
+
+                        is KeyboardStep.Cut ->
+                            viewModel.onEvent(NativeEditorEvent.CutSelection)
                         is KeyboardStep.Select -> {
                             viewModel.onEvent(
                                 NativeEditorEvent.SelectionStarted(step.anchorLine, step.anchorCol),
@@ -1963,9 +1985,11 @@ class NativeCodeEditorTest {
                     mainClock.advanceTimeBy(300)
                     awaitIdle()
                     carets += viewModel.cursor.line to viewModel.cursor.column
-                    selections += viewModel.state.value.selection?.let {
-                        "${it.startLine}:${it.startCol}-${it.endLine}:${it.endCol}"
-                    }
+                    selections +=
+                        viewModel.state.value.selection?.let {
+                            val box = if (it.columnar) "box:" else ""
+                            "$box${it.startLine}:${it.startCol}-${it.endLine}:${it.endCol}"
+                        }
                 }
                 finalLines = viewModel.state.value.content.getLines()
             }
@@ -2059,6 +2083,38 @@ class NativeCodeEditorTest {
             listOf(1 to 4, 1 to 5, 1 to 9, 1 to 4),
             probe.carets,
             "向右族收右端再往右，向左族收左端再往左",
+        )
+    }
+
+    @Test
+    fun shiftAltArrowsDrawABoxAndCutRemovesJustThatColumnWindow() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 0,
+                startColumn = 4,
+                steps =
+                    listOf(
+                        KeyboardStep.Box(listOf(Key.DirectionDown)),
+                        KeyboardStep.Box(listOf(Key.DirectionRight)),
+                        KeyboardStep.Box(listOf(Key.DirectionDown)),
+                        KeyboardStep.Cut,
+                    ),
+            )
+        assertEquals(
+            listOf("box:0:4-1:4", "box:0:4-1:5", "box:0:4-2:5", null),
+            probe.selections,
+            "第一步只有行高、宽度为 0，盒子仍要留在状态里，否则下一次按左右就丢了行高",
+        )
+        assertEquals(
+            listOf(1 to 4, 1 to 5, 2 to 5, 2 to 1),
+            probe.carets,
+            "光标始终停在盒子焦点端；剪切后落回本行行尾以内",
+        )
+        assertEquals(
+            listOf("fun ain() {", "    rintln(1)", "}", ""),
+            probe.lines,
+            "每行只挖掉第 4 列那一个字符，短的末行不动",
         )
     }
 }

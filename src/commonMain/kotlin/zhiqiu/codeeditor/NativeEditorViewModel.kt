@@ -304,6 +304,15 @@ class NativeEditorViewModel(
                 )
             }
 
+            is NativeEditorEvent.SelectionBoxChanged -> {
+                handleSelectionBoxChanged(
+                    event.anchorLine,
+                    event.anchorCol,
+                    event.focusLine,
+                    event.focusCol,
+                )
+            }
+
             is NativeEditorEvent.SelectionCleared -> {
                 handleSelectionCleared()
             }
@@ -1370,14 +1379,21 @@ class NativeEditorViewModel(
         if (session == null || lineCount <= 0) return SessionTarget(0, 0, null)
         val line = session.cursorLine.coerceIn(0, lineCount - 1)
         val column = session.cursorColumn.coerceIn(0, content.getLine(line).length)
-        val selection =
-            session.selection?.normalize()?.takeIf {
-                it.startLine in 0 until lineCount &&
-                    it.endLine in 0 until lineCount &&
-                    it.startCol in 0..content.getLine(it.startLine).length &&
-                    it.endCol in 0..content.getLine(it.endLine).length
-            }
+        val selection = session.selection?.normalize()?.takeIf { it.usableIn(content) }
         return SessionTarget(line, column, selection)
+    }
+
+    /**
+     * 会话里的选区还配不配回到这份内容上。
+     *
+     * 盒选区的右边缘本来就常悬在短行之外（取值时逐行夹），所以它只校验行范围，
+     * 按普通选区那样逐行判列会把正常的盒子丢掉。
+     */
+    private fun SelectionRange.usableIn(content: ILineBuffer): Boolean {
+        if (startLine !in 0 until content.lineCount || endLine !in 0 until content.lineCount) return false
+        if (startCol < 0 || endCol < 0) return false
+        if (columnar) return true
+        return startCol <= content.getLine(startLine).length && endCol <= content.getLine(endLine).length
     }
 
     /**
@@ -1644,6 +1660,44 @@ class NativeEditorViewModel(
         _state.value = _state.value.copy(selection = sel)
     }
 
+    /**
+     * 盒选区：锚点与焦点撑成矩形，`columnar` 一路带到逐行列窗口的取值/高亮。
+     *
+     * 宽度为 0 但跨行的盒子要留在状态里 —— 它是「下一次按左右把宽度撑开」的支点，
+     * 一旦按普通选区的空判据清掉，行高就在第二次按键时丢了。只有塌成一个点才清。
+     */
+    private fun handleSelectionBoxChanged(
+        anchorLine: Int,
+        anchorCol: Int,
+        focusLine: Int,
+        focusCol: Int,
+    ) {
+        selectionGestureAnchor = anchorLine to anchorCol
+        val box = SelectionRange(anchorLine, anchorCol, focusLine, focusCol, columnar = true).normalize()
+        if (box.startLine == box.endLine && box.startCol == box.endCol) {
+            if (_state.value.selection != null) {
+                syncCursorNow(focusLine, focusCol)
+                _state.value =
+                    _state.value.copy(
+                        selection = null,
+                        cursorLine = focusLine,
+                        cursorColumn = focusCol,
+                    )
+            }
+            return
+        }
+        if (box == _state.value.selection) {
+            return
+        }
+        syncCursorNow(focusLine, focusCol)
+        _state.value =
+            _state.value.copy(
+                selection = box,
+                cursorLine = focusLine,
+                cursorColumn = focusCol,
+            )
+    }
+
     private fun handleSelectionCleared() {
         selectionGestureAnchor = null
         _state.value = _state.value.copy(selection = null)
@@ -1840,6 +1894,13 @@ class NativeEditorViewModel(
         val lines = currentState.content.getLines()
         val n = sel?.normalize()
 
+        // 跨行盒选区：每行只动同一段列窗口，行与行互不影响。
+        // 多行剪贴板（带换行）不走这条路 —— 盒子按行铺开粘贴语义要与换行打架，暂按普通选区处理。
+        if (n != null && n.columnar && n.startLine != n.endLine && !replacement.contains('\n')) {
+            applyColumnarReplacement(replacement, n, lines)
+            return
+        }
+
         // 统一归一化替换区间为 (startLine,startCol)..(endLine,endCol)；无选区时区间退化为光标点。
         val startLine: Int
         val startCol: Int
@@ -1893,6 +1954,47 @@ class NativeEditorViewModel(
                 content = newContent,
                 cursorLine = cursorLine,
                 cursorColumn = cursorColumn,
+                isModified = true,
+                selection = null,
+                highlightVersion = currentState.highlightVersion + 1,
+                contentRevision = currentState.contentRevision + 1,
+                canUndo = undoManager.canUndo,
+                canRedo = undoManager.canRedo,
+            )
+        syncCursorFromState()
+    }
+
+    /**
+     * 盒选区写入：把 [box] 的列窗口在每一行都替换成 [replacement]（剪切/删除时为空串）。
+     * 与 [applyReplacement] 同一条链路：整篇一次替换、撤销栈一条记录、高亮一次重建。
+     */
+    private fun applyColumnarReplacement(
+        replacement: String,
+        box: SelectionRange,
+        lines: List<String>,
+    ) {
+        if (lines.isEmpty()) return
+        val lastRow = minOf(box.endLine, lines.lastIndex)
+        val firstRow = minOf(box.startLine, lastRow)
+        val replaced = lines.toMutableList()
+        for (row in firstRow..lastRow) {
+            val text = replaced[row]
+            val left = text.substring(0, minOf(box.startCol, text.length))
+            val right = text.substring(minOf(box.endCol, text.length))
+            replaced[row] = left + replacement + right
+        }
+        val newText = replaced.joinToString("\n")
+        val newContent = LineBuffer(newText)
+        highlightCache.rebuild(newContent.getLines())
+        undoManager.push(EditOp.ReplaceAll(lines.joinToString("\n"), newText))
+        selectionGestureAnchor = null
+        val caretLine = cursor.line.coerceIn(firstRow, lastRow)
+        val currentState = _state.value
+        _state.value =
+            currentState.copy(
+                content = newContent,
+                cursorLine = caretLine,
+                cursorColumn = minOf(box.startCol + replacement.length, replaced[caretLine].length),
                 isModified = true,
                 selection = null,
                 highlightVersion = currentState.highlightVersion + 1,

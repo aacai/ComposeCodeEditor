@@ -122,6 +122,29 @@ class EditorKeymapTest {
     }
 
     @Test
+    fun shiftAltOnArrowsMeansColumnarSelection() {
+        assertEquals(
+            EditorNavigation(EditorNavKey.Down, extend = true, columnar = true),
+            navigate(Key.DirectionDown, shift = true, alt = true),
+        )
+        assertEquals(
+            EditorNavigation(EditorNavKey.Right, extend = true, columnar = true),
+            navigate(Key.DirectionRight, shift = true, alt = true),
+        )
+        // Alt 已被盒子占用，同一组合不能再兼作词跳或整篇首尾
+        assertEquals(
+            EditorNavigation(EditorNavKey.Home, extend = true, columnar = true),
+            navigate(Key.MoveHome, shift = true, alt = true),
+        )
+        assertEquals(
+            EditorNavigation(EditorNavKey.End, extend = true, columnar = true),
+            navigate(Key.MoveEnd, shift = true, ctrl = true, alt = true),
+        )
+        // 没按 Shift 就谈不上扩选，单按 Alt 仍是普通移动
+        assertEquals(EditorNavigation(EditorNavKey.Down), navigate(Key.DirectionDown, alt = true))
+    }
+
+    @Test
     fun ctrlAndAltOnHorizontalKeysWalkWords() {
         assertEquals(
             EditorNavigation(EditorNavKey.Left, wordWise = true),

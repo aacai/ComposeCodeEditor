@@ -111,6 +111,51 @@ class NativeEditorSessionIoTest {
         }
 
     @Test
+    fun aColumnarSelectionRoundTripsThroughTheSession() =
+        runTest {
+            write("fun a() {\n  xxxxx\n  y\n}\n")
+            viewModel.onEvent(NativeEditorEvent.LoadFile(file.absolutePath))
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.SelectionBoxChanged(0, 4, 1, 6))
+            val snapshot = viewModel.currentSession()
+            assertEquals(SelectionRange(0, 4, 1, 6, columnar = true), snapshot.selection)
+
+            val reopened = freshViewModel()
+            reopened.onEvent(NativeEditorEvent.LoadFile(file.absolutePath, snapshot))
+            advanceUntilIdle()
+
+            assertEquals(
+                SelectionRange(0, 4, 1, 6, columnar = true),
+                reopened.state.value.selection,
+                "重开之后仍是盒子，不能被降级成普通选区",
+            )
+            assertEquals(1, reopened.state.value.cursorLine)
+            assertEquals(6, reopened.state.value.cursorColumn)
+        }
+
+    @Test
+    fun aBoxWhoseEdgeHangsPastAShortLineIsNotDropped() =
+        runTest {
+            // 焦点行只有一格宽，普通选区的列校验会把它当越界整块丢掉；盒子只校验行范围
+            write("fun a() {\n  xxxxx\n  y\n}\n")
+            viewModel.onEvent(NativeEditorEvent.LoadFile(file.absolutePath))
+            advanceUntilIdle()
+
+            viewModel.onEvent(NativeEditorEvent.SelectionBoxChanged(0, 4, 2, 6))
+
+            val reopened = freshViewModel()
+            reopened.onEvent(
+                NativeEditorEvent.LoadFile(file.absolutePath, viewModel.currentSession())
+            )
+            advanceUntilIdle()
+
+            assertEquals(SelectionRange(0, 4, 2, 6, columnar = true), reopened.state.value.selection)
+            val lines = reopened.state.value.content.getLines()
+            assertEquals("a(\nxx\n", reopened.state.value.selection?.getSelectedText(lines), "短行取到空，盒子仍占那一行")
+        }
+
+    @Test
     fun sessionLanguageOverridesTheExtensionGuess() =
         runTest {
             // 磁盘上是 .kt（探出 Kotlin），但用户上次手动切成了 JSON 模式

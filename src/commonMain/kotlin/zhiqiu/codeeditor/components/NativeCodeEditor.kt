@@ -389,6 +389,15 @@ fun NativeCodeEditor(
     onSelectWord: (line: Int, col: Int) -> Unit = { _, _ -> },
     onSelectionHandleDragged: (anchorLine: Int, anchorCol: Int, dragLine: Int, dragCol: Int) -> Unit =
         { _, _, _, _ -> },
+    /**
+     * 列（盒）选区变更（Shift+Alt + 方向键）。默认退化成普通选区：没接线的宿主仍能扩选，
+     * 只是拿不到逐列的盒子语义。
+     */
+    onSelectionBoxChanged: (anchorLine: Int, anchorCol: Int, focusLine: Int, focusCol: Int) -> Unit =
+        { anchorLine, anchorCol, focusLine, focusCol ->
+            onSelectionStarted(anchorLine, anchorCol)
+            onSelectionUpdated(focusLine, focusCol)
+        },
     onSelectionCleared: () -> Unit,
     onFontSizeChanged: (size: Int) -> Unit,
     onCopy: () -> Unit = {},
@@ -1793,6 +1802,7 @@ val (rawLine, _) =
                             isWordWrap = state.isWordWrap,
                             onSelectionStarted = onSelectionStarted,
                             onSelectionUpdated = onSelectionUpdated,
+                            onSelectionBoxChanged = onSelectionBoxChanged,
                             onSelectionCleared = onSelectionCleared,
                             visColsProvider = { wrapRowsLayoutState.visCols },
                             onLineLongPress = { line, col ->
@@ -2576,6 +2586,7 @@ private fun EditorInputLayerHost(
     onLineLongPress: (line: Int, col: Int) -> Unit = { _, _ -> },
     onSelectionStarted: (line: Int, col: Int) -> Unit = { _, _ -> },
     onSelectionUpdated: (line: Int, col: Int) -> Unit = { _, _ -> },
+    onSelectionBoxChanged: (anchorLine: Int, anchorCol: Int, focusLine: Int, focusCol: Int) -> Unit,
     onSelectionCleared: () -> Unit = {},
     // 换行模式每视觉行列数（0 = 不换行）。用 provider 传，避免为了算导航在大作用域里组合读它
     visColsProvider: () -> Int = { 0 },
@@ -2603,6 +2614,8 @@ private fun EditorInputLayerHost(
         if (anchor == null) {
             if (selection != null) onSelectionCleared()
             onCursorChange(outcome.caret.line, outcome.caret.column)
+        } else if (nav.columnar) {
+            onSelectionBoxChanged(anchor.line, anchor.column, outcome.caret.line, outcome.caret.column)
         } else {
             // 每次按键都重发锚点：ViewModel 里那个手势锚点可能还是上一次拖选的，
             // 键盘扩选必须以当前选区的对端为准

@@ -11,15 +11,18 @@ enum class EditorNavKey {
 }
 
 /**
- * 一次键盘导航的完整语义：方向 + 是否扩选 + 是否按词跳 + 是否跳到整篇首尾。
+ * 一次键盘导航的完整语义：方向 + 是否扩选 + 是否按词跳 + 是否跳到整篇首尾 + 是否列（盒）选。
  *
  * 修饰键怎么摊平属于 [EditorKeymap]，这里的字段已经是「该做什么」。
+ * [columnar] 表示拉出矩形选区：锚点行列都不动，只在矩形内移动焦点列，
+ * 因此词跳与整篇首尾在这种模式下没有意义（由调用方抑制）。
  */
 data class EditorNavigation(
     val key: EditorNavKey,
     val extend: Boolean = false,
     val wordWise: Boolean = false,
     val toDocumentEdge: Boolean = false,
+    val columnar: Boolean = false,
 )
 
 /** 文档里的一个位置：0 基行列。 */
@@ -51,6 +54,10 @@ object EditorCaretNavigation {
         visCols: Int = 0,
     ): NavigationOutcome {
         if (lines.isEmpty()) return NavigationOutcome(CaretPosition(0, 0), null)
+        if (nav.columnar) {
+            // 盒子的焦点列可以越过本行行尾（经过短行时宽度要留着），所以这里不按行长夹列
+            return boxNavigate(lines, CaretPosition(caret.line.coerceIn(0, lines.lastIndex), maxOf(0, caret.column)), selection, nav)
+        }
         val start = clamp(lines, caret)
         val range = selection?.normalize()?.takeIf { it.isNotEmpty() }
         if (!nav.extend) {
@@ -66,6 +73,51 @@ object EditorCaretNavigation {
         if (moved == anchor) return NavigationOutcome(anchor, null)
         return NavigationOutcome(moved, anchor)
     }
+
+    /**
+     * 列（盒）选区：锚点是当前选区里与光标对角的那个角（没有选区就是光标自己），行列都不动；
+     * 光标只在盒子里走 —— 左右改列宽、上下改行高，换行时不夹列，
+     * 否则经过一条短行就把整个盒子的宽度永久缩掉了。
+     */
+    private fun boxNavigate(
+        lines: List<String>,
+        start: CaretPosition,
+        selection: SelectionRange?,
+        nav: EditorNavigation,
+    ): NavigationOutcome {
+        val moved = boxMove(lines, start, nav)
+        if (!nav.extend) return NavigationOutcome(moved, null)
+        val anchor = selection?.let { oppositeCorner(it.normalize(), start) } ?: start
+        // 走回锚点：盒子退化成一点，没有选区
+        if (moved == anchor) return NavigationOutcome(moved, null)
+        return NavigationOutcome(moved, anchor)
+    }
+
+    private fun oppositeCorner(
+        range: SelectionRange,
+        caret: CaretPosition,
+    ): CaretPosition =
+        if (caret == CaretPosition(range.startLine, range.startCol)) {
+            CaretPosition(range.endLine, range.endCol)
+        } else {
+            CaretPosition(range.startLine, range.startCol)
+        }
+
+    private fun boxMove(
+        lines: List<String>,
+        from: CaretPosition,
+        nav: EditorNavigation,
+    ): CaretPosition =
+        when (nav.key) {
+            EditorNavKey.Left -> CaretPosition(from.line, maxOf(0, from.column - 1))
+            // 焦点列可能已经越过本行行尾（从短行上走过来），按右不能再把它缩回去
+            EditorNavKey.Right ->
+                if (from.column < lines[from.line].length) CaretPosition(from.line, from.column + 1) else from
+            EditorNavKey.Up -> if (from.line > 0) CaretPosition(from.line - 1, from.column) else from
+            EditorNavKey.Down -> if (from.line < lines.lastIndex) CaretPosition(from.line + 1, from.column) else from
+            EditorNavKey.Home -> CaretPosition(from.line, 0)
+            EditorNavKey.End -> CaretPosition(from.line, lines[from.line].length)
+        }
 
     /** 收拢方向：向左族（Left/Up/Home）取选区左端，向右族取右端。 */
     private fun collapsesLeft(nav: EditorNavigation): Boolean =

@@ -108,6 +108,18 @@ sealed interface NativeEditorEvent {
         val dragCol: Int,
     ) : NativeEditorEvent
 
+    /**
+     * 列（盒）选区：锚点与焦点撑出一个矩形，起止行列各自独立。
+     *
+     * 与 [SelectionHandleDragged] 同形但语义不同 —— 那条走普通选区，这条把 `columnar` 写进选区模型。
+     */
+    data class SelectionBoxChanged(
+        val anchorLine: Int,
+        val anchorCol: Int,
+        val focusLine: Int,
+        val focusCol: Int,
+    ) : NativeEditorEvent
+
     data object SelectionCleared : NativeEditorEvent
 
     data object SelectAll : NativeEditorEvent

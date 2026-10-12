@@ -20,6 +20,7 @@ class EditorCaretNavigationTest {
         extend: Boolean = false,
         wordWise: Boolean = false,
         toDocumentEdge: Boolean = false,
+        columnar: Boolean = false,
         lines: List<String> = document,
         selection: SelectionRange? = null,
         visCols: Int = 0,
@@ -28,7 +29,7 @@ class EditorCaretNavigationTest {
             lines = lines,
             caret = CaretPosition(line, column),
             selection = selection,
-            nav = EditorNavigation(key, extend, wordWise, toDocumentEdge),
+            nav = EditorNavigation(key, extend, wordWise, toDocumentEdge, columnar),
             visCols = visCols,
         )
 
@@ -203,5 +204,99 @@ class EditorCaretNavigationTest {
         val tail = nav(1, 5, EditorNavKey.End, extend = true, toDocumentEdge = true)
         assertEquals(CaretPosition(3, 15), tail.caret)
         assertEquals(CaretPosition(1, 5), tail.anchor)
+    }
+
+    // ==================== 列（盒）选区 ====================
+
+    @Test
+    fun columnarDownOpensAZeroWidthBoxAndKeepsGrowingRows() {
+        val first = nav(1, 4, EditorNavKey.Down, extend = true, columnar = true)
+        assertEquals(CaretPosition(2, 4), first.caret)
+        assertEquals(CaretPosition(1, 4), first.anchor, "没有选区时盒子从光标撑开")
+
+        val second =
+            nav(
+                2, 4, EditorNavKey.Down,
+                extend = true, columnar = true,
+                selection = SelectionRange(1, 4, 2, 4, columnar = true),
+            )
+        assertEquals(CaretPosition(3, 4), second.caret)
+        assertEquals(CaretPosition(1, 4), second.anchor, "行高要一路留住，宽度之后再撑")
+    }
+
+    @Test
+    fun columnarRightWidensEveryRowOfTheBox() {
+        val outcome =
+            nav(
+                3, 4, EditorNavKey.Right,
+                extend = true, columnar = true,
+                selection = SelectionRange(1, 4, 3, 4, columnar = true),
+            )
+        assertEquals(CaretPosition(3, 5), outcome.caret)
+        assertEquals(CaretPosition(1, 4), outcome.anchor)
+
+        val anchor = outcome.anchor
+        val box =
+            anchor?.let {
+                SelectionRange(it.line, it.column, outcome.caret.line, outcome.caret.column, columnar = true).normalize()
+            }
+        assertEquals(SelectionRange(1, 4, 3, 5, columnar = true), box, "盒子要长成 3 行 × 1 列")
+    }
+
+    @Test
+    fun columnarVerticalMoveDoesNotClampTheColumnToShortLines() {
+        // 第 2 行是空行：普通上下移动会把列夹到 0，盒子必须原样带过去
+        val outcome =
+            nav(
+                3, 10, EditorNavKey.Up,
+                extend = true, columnar = true,
+                selection = SelectionRange(0, 8, 3, 10, columnar = true),
+            )
+        assertEquals(CaretPosition(2, 10), outcome.caret)
+        assertEquals(CaretPosition(0, 8), outcome.anchor)
+    }
+
+    @Test
+    fun columnarHomeAndEndUseTheFocusRow() {
+        val home =
+            nav(
+                3, 10, EditorNavKey.Home,
+                extend = true, columnar = true,
+                selection = SelectionRange(0, 8, 3, 10, columnar = true),
+            )
+        assertEquals(CaretPosition(3, 0), home.caret)
+        assertEquals(CaretPosition(0, 8), home.anchor)
+
+        val end = nav(1, 4, EditorNavKey.End, extend = true, columnar = true)
+        assertEquals(CaretPosition(1, 13), end.caret)
+        assertEquals(CaretPosition(1, 4), end.anchor)
+    }
+
+    @Test
+    fun columnarMovesStayInTheirRowAndCollapseBackOntoTheAnchor() {
+        // 行尾按右不出行：盒子只改列宽
+        val atRowEnd = nav(0, 12, EditorNavKey.Right, extend = false, columnar = true)
+        assertEquals(CaretPosition(0, 12), atRowEnd.caret)
+        assertEquals(null, atRowEnd.anchor, "不按 Shift 的列导航就是普通移动")
+
+        // 走回锚点：盒子塌成一点，选区该消失
+        val back =
+            nav(
+                1, 4, EditorNavKey.Up,
+                extend = true, columnar = true,
+                selection = SelectionRange(0, 4, 1, 4, columnar = true),
+            )
+        assertEquals(CaretPosition(0, 4), back.caret)
+        assertEquals(null, back.anchor)
+
+        // 已经在最后一行，向下不动
+        val stopped =
+            nav(
+                3, 5, EditorNavKey.Down,
+                extend = true, columnar = true,
+                selection = SelectionRange(0, 5, 3, 5, columnar = true),
+            )
+        assertEquals(CaretPosition(3, 5), stopped.caret)
+        assertEquals(CaretPosition(0, 5), stopped.anchor)
     }
 }
