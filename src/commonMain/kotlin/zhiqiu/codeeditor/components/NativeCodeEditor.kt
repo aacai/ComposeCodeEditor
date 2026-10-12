@@ -118,8 +118,11 @@ import zhiqiu.codeeditor.text.BracketMatchResult
 import zhiqiu.codeeditor.text.BracketMatcher
 import zhiqiu.codeeditor.render.BracketPairGuide
 import zhiqiu.codeeditor.render.BracketPairGuides
+import zhiqiu.codeeditor.text.CaretPosition
 import zhiqiu.codeeditor.text.CodeFolding
+import zhiqiu.codeeditor.text.EditorCaretNavigation
 import zhiqiu.codeeditor.text.EditorKeymap
+import zhiqiu.codeeditor.text.EditorNavigation
 import zhiqiu.codeeditor.text.EditorShortcut
 import zhiqiu.codeeditor.render.EditorTheme
 import zhiqiu.codeeditor.text.FoldViewport
@@ -1788,6 +1791,10 @@ val (rawLine, _) =
                             charWidthPx = sliceCharWidthPx,
                             viewportWidthPx = with(density) { viewportWidth.toPx() },
                             isWordWrap = state.isWordWrap,
+                            onSelectionStarted = onSelectionStarted,
+                            onSelectionUpdated = onSelectionUpdated,
+                            onSelectionCleared = onSelectionCleared,
+                            visColsProvider = { wrapRowsLayoutState.visCols },
                             onLineLongPress = { line, col ->
                                 val text = lines.getOrNull(line).orEmpty()
                                 if (WordBoundary.wordRangeAt(text, col) != null) {
@@ -2567,6 +2574,11 @@ private fun EditorInputLayerHost(
     viewportWidthPx: Float = 0f,
     isWordWrap: Boolean = false,
     onLineLongPress: (line: Int, col: Int) -> Unit = { _, _ -> },
+    onSelectionStarted: (line: Int, col: Int) -> Unit = { _, _ -> },
+    onSelectionUpdated: (line: Int, col: Int) -> Unit = { _, _ -> },
+    onSelectionCleared: () -> Unit = {},
+    // 换行模式每视觉行列数（0 = 不换行）。用 provider 传，避免为了算导航在大作用域里组合读它
+    visColsProvider: () -> Int = { 0 },
     modifier: Modifier = Modifier,
 ) {
     val lineIndex = if (selection == null) cursor.line else frozenLine.value
@@ -2577,6 +2589,28 @@ private fun EditorInputLayerHost(
         selection?.normalize()?.takeIf {
             it.startLine == it.endLine && it.startLine == lineIndex
         }
+    // 方向键导航：落点由纯函数算，结果发回既有的光标/选区回调，四个宿主屏幕的接线不用改。
+    val onNavigationKey: (EditorNavigation) -> Boolean = { nav ->
+        val outcome =
+            EditorCaretNavigation.navigate(
+                lines = lines,
+                caret = CaretPosition(cursor.line, cursor.column),
+                selection = selection,
+                nav = nav,
+                visCols = visColsProvider(),
+            )
+        val anchor = outcome.anchor
+        if (anchor == null) {
+            if (selection != null) onSelectionCleared()
+            onCursorChange(outcome.caret.line, outcome.caret.column)
+        } else {
+            // 每次按键都重发锚点：ViewModel 里那个手势锚点可能还是上一次拖选的，
+            // 键盘扩选必须以当前选区的对端为准
+            onSelectionStarted(anchor.line, anchor.column)
+            onSelectionUpdated(outcome.caret.line, outcome.caret.column)
+        }
+        true
+    }
     InputLayer(
         line = lines.getOrNull(lineIndex) ?: "",
         cursorColumn = column,
@@ -2600,6 +2634,7 @@ private fun EditorInputLayerHost(
         viewportWidthPx = viewportWidthPx,
         isWordWrap = isWordWrap,
         onLineLongPress = onLineLongPress,
+        onNavigationKey = onNavigationKey,
         modifier = modifier,
     )
 }
@@ -2642,6 +2677,9 @@ private fun InputLayer(
     charWidthPx: Float = 0f,
     viewportWidthPx: Float = 0f,
     isWordWrap: Boolean = false,
+    // 方向键导航交给上层 EditorInputLayerHost：只有它拿得到整篇 lines、当前选区与选区回调。
+    // 返回 true 表示已消费，不能再让 BasicTextField 在自己的单行缓冲里挪一次插入点（跨行、跨窗口都会算错）。
+    onNavigationKey: (EditorNavigation) -> Boolean = { false },
     // 换行模式输入层覆盖光标所在视觉行，长按选词由本层代为触发（底层视觉行被遮挡无法接收）。
     onLineLongPress: (line: Int, col: Int) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
@@ -2690,6 +2728,7 @@ private fun InputLayer(
     val latestOnCursorChange by rememberUpdatedState(onCursorChange)
     val latestOnEnterKey by rememberUpdatedState(onEnterKey)
     val latestOnEditorShortcut by rememberUpdatedState(onEditorShortcut)
+    val latestOnNavigationKey by rememberUpdatedState(onNavigationKey)
     val latestOnPasteText by rememberUpdatedState(onPasteText)
     // 点击映射用「当前窗口/字宽」而非字段内部状态，保证超长行滚到行尾后点击列始终正确（VSCode 行为）
     val latestWinStart by rememberUpdatedState(winStart)
@@ -2714,10 +2753,16 @@ private fun InputLayer(
         if (!acceptInput) return@LaunchedEffect
         appliedWinStart = winStart
         appliedWinEnd = winEnd
+        val col = (cursorColumn - winStart).coerceIn(0, windowText.length)
         if (textFieldState.text.toString() != windowText) {
-            val col = (cursorColumn - winStart).coerceIn(0, windowText.length)
             textFieldState.edit {
                 replace(0, length, windowText)
+                placeCursorBeforeCharAt(col)
+            }
+        } else if (textFieldState.selection.collapsed && textFieldState.selection.start != col) {
+            // 键盘导航只挪光标、不挪文本，字段文本没变；不同步插入点的话下一次键入会落在旧列。
+            // 上报侧的「光标与期望一致」守卫（见下方 snapshotFlow）已把这个回写判为回声，不会成环。
+            textFieldState.edit {
                 placeCursorBeforeCharAt(col)
             }
         }
@@ -3037,7 +3082,15 @@ private fun InputLayer(
                         }
                         true
                     } else {
-                        false
+                        val navigation =
+                            EditorKeymap.resolveNavigation(
+                                key = keyEvent.key,
+                                shift = keyEvent.isShiftPressed,
+                                ctrlOrMeta = keyEvent.isCtrlPressed || keyEvent.isMetaPressed,
+                                alt = keyEvent.isAltPressed,
+                            )
+                        // 上层没接（或算不出落点）时交回 BasicTextField，维持旧的行内移动
+                        navigation != null && latestOnNavigationKey(navigation)
                     }
                 },
     )

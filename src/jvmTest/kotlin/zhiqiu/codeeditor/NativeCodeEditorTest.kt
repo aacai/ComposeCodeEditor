@@ -27,6 +27,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.withKeyDown
 import androidx.compose.ui.test.v2.runComposeUiTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -1846,5 +1847,218 @@ class NativeCodeEditorTest {
             Dispatchers.resetMain()
         }
         return Triple(cursorLine, shown, headShown)
+    }
+
+    private sealed class KeyboardStep {
+        data class Press(
+            val key: Key,
+            val times: Int = 1,
+        ) : KeyboardStep()
+
+        data class Type(val text: String) : KeyboardStep()
+
+        data class Select(
+            val anchorLine: Int,
+            val anchorCol: Int,
+            val focusLine: Int,
+            val focusCol: Int,
+        ) : KeyboardStep()
+
+        /** 按住 Shift 走方向键（Compose 测试用 withKeyDown 合成修饰键）。 */
+        data class Extend(val keys: List<Key>) : KeyboardStep()
+    }
+
+    /** 每个步骤结束时的光标、选区，以及最后整篇内容。 */
+    private data class KeyboardProbe(
+        val carets: List<Pair<Int, Int>>,
+        val selections: List<String?>,
+        val lines: List<String>,
+    )
+
+    /**
+     * 真实走「点键盘 → 编辑器 → ViewModel → 回到编辑器」这条链路：
+     * 用真 NativeEditorViewModel，方向键经输入层的 onPreviewKeyEvent 落到既有的光标/选区事件。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun driveKeyboard(
+        initialText: String,
+        startLine: Int,
+        startColumn: Int,
+        steps: List<KeyboardStep>,
+    ): KeyboardProbe {
+        val scheduler = TestCoroutineScheduler()
+        Dispatchers.setMain(UnconfinedTestDispatcher(scheduler))
+        val carets = mutableListOf<Pair<Int, Int>>()
+        val selections = mutableListOf<String?>()
+        var finalLines = emptyList<String>()
+        val file = File.createTempFile("editor-nav", ".kt")
+        try {
+            file.writeText(initialText, Charsets.UTF_8)
+            runComposeUiTest {
+                val viewModel =
+                    NativeEditorViewModel(
+                        defaultDispatcher = UnconfinedTestDispatcher(scheduler),
+                        ioDispatcher = UnconfinedTestDispatcher(scheduler),
+                    )
+                setContent {
+                    NativeCodeEditor(
+                        state = viewModel.state.collectAsState().value,
+                        cursor = viewModel.cursor,
+                        onLineContentChange = { line, text ->
+                            viewModel.onEvent(NativeEditorEvent.LineContentChanged(line, text))
+                        },
+                        onCursorChange = { line, col ->
+                            viewModel.onEvent(NativeEditorEvent.CursorMoved(line, col))
+                        },
+                        onSelectionStarted = { line, col ->
+                            viewModel.onEvent(NativeEditorEvent.SelectionStarted(line, col))
+                        },
+                        onSelectionUpdated = { line, col ->
+                            viewModel.onEvent(NativeEditorEvent.SelectionUpdated(line, col))
+                        },
+                        onSelectionCleared = {
+                            viewModel.onEvent(NativeEditorEvent.SelectionCleared)
+                        },
+                        onFontSizeChanged = {},
+                        highlightCache = viewModel.highlightCache,
+                        theme = EditorTheme.dark(),
+                    )
+                }
+                awaitIdle()
+
+                viewModel.onEvent(NativeEditorEvent.LoadFile(file.absolutePath, null))
+                mainClock.advanceTimeBy(400)
+                awaitIdle()
+
+                // 点一下输入层拿到键盘焦点，然后把光标放到确定的起点
+                val field = onNodeWithTag("editor-basictextfield")
+                field.performClick()
+                mainClock.advanceTimeBy(300)
+                awaitIdle()
+                viewModel.onEvent(NativeEditorEvent.CursorMoved(startLine, startColumn))
+                mainClock.advanceTimeBy(300)
+                awaitIdle()
+
+                steps.forEach { step ->
+                    when (step) {
+                        is KeyboardStep.Press -> field.performKeyInput {
+                            repeat(step.times) { pressKey(step.key) }
+                        }
+
+                        is KeyboardStep.Type -> field.performTextInput(step.text)
+                        is KeyboardStep.Extend -> field.performKeyInput {
+                            withKeyDown(Key.ShiftLeft) {
+                                step.keys.forEach { pressKey(it) }
+                            }
+                        }
+                        is KeyboardStep.Select -> {
+                            viewModel.onEvent(
+                                NativeEditorEvent.SelectionStarted(step.anchorLine, step.anchorCol),
+                            )
+                            viewModel.onEvent(
+                                NativeEditorEvent.SelectionUpdated(step.focusLine, step.focusCol),
+                            )
+                        }
+                    }
+                    mainClock.advanceTimeBy(300)
+                    awaitIdle()
+                    carets += viewModel.cursor.line to viewModel.cursor.column
+                    selections += viewModel.state.value.selection?.let {
+                        "${it.startLine}:${it.startCol}-${it.endLine}:${it.endCol}"
+                    }
+                }
+                finalLines = viewModel.state.value.content.getLines()
+            }
+        } finally {
+            Dispatchers.resetMain()
+            file.delete()
+        }
+        return KeyboardProbe(carets, selections, finalLines)
+    }
+
+    @Test
+    fun arrowKeysMoveTheCaretAndTypingFollowsIt() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 0,
+                startColumn = 0,
+                steps =
+                    listOf(
+                        KeyboardStep.Press(Key.DirectionDown),
+                        KeyboardStep.Press(Key.MoveEnd),
+                        KeyboardStep.Press(Key.MoveHome),
+                        KeyboardStep.Press(Key.MoveHome),
+                        KeyboardStep.Press(Key.DirectionRight, times = 4),
+                        KeyboardStep.Type("X"),
+                    ),
+            )
+        assertEquals(
+            listOf(1 to 0, 1 to 14, 1 to 4, 1 to 0, 1 to 4, 1 to 5),
+            probe.carets,
+            "下/行尾/行首缩进/绝对行首/右×4 的落点",
+        )
+        assertEquals(
+            "    Xprintln(1)",
+            probe.lines.getOrNull(1),
+            "键入必须落在导航后的那一列，落在旧位置说明字段插入点没跟上",
+        )
+    }
+
+    @Test
+    fun shiftArrowsExtendTheSelectionFromTheOppositeEdge() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 1,
+                startColumn = 0,
+                steps =
+                    listOf(
+                        KeyboardStep.Extend(List(4) { Key.DirectionRight }),
+                        KeyboardStep.Extend(listOf(Key.DirectionDown)),
+                        KeyboardStep.Extend(listOf(Key.DirectionRight)),
+                        KeyboardStep.Extend(listOf(Key.DirectionLeft)),
+                        KeyboardStep.Extend(listOf(Key.MoveHome)),
+                        KeyboardStep.Extend(listOf(Key.DirectionUp)),
+                        KeyboardStep.Extend(listOf(Key.MoveEnd)),
+                    ),
+            )
+        assertEquals(
+            listOf("1:0-1:4", "1:0-2:1", "1:0-3:0", "1:0-2:1", "1:0-2:0", null, "1:0-1:14"),
+            probe.selections,
+            "Shift 扩选要钉住起点（选区对端），走回起点那一格就收拢",
+        )
+        assertEquals(
+            listOf(1 to 4, 2 to 1, 3 to 0, 2 to 1, 2 to 0, 1 to 0, 1 to 14),
+            probe.carets,
+            "光标始终停在选区焦点端；跨行时列按目标行长度钳住",
+        )
+    }
+
+    @Test
+    fun plainArrowCollapsesTheSelectionTowardsTheDirection() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 1,
+                startColumn = 0,
+                steps =
+                    listOf(
+                        KeyboardStep.Select(1, 0, 1, 4),
+                        KeyboardStep.Press(Key.DirectionRight),
+                        KeyboardStep.Select(1, 5, 1, 9),
+                        KeyboardStep.Press(Key.DirectionLeft),
+                    ),
+            )
+        assertEquals(
+            listOf("1:0-1:4", null, "1:5-1:9", null),
+            probe.selections,
+            "未按 Shift 的方向键要先收拢选区",
+        )
+        assertEquals(
+            listOf(1 to 4, 1 to 5, 1 to 9, 1 to 4),
+            probe.carets,
+            "向右族收右端再往右，向左族收左端再往左",
+        )
     }
 }

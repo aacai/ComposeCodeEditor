@@ -84,4 +84,81 @@ class EditorKeymapTest {
         assertNull(map(Key.F, shift = true, alt = true, ctrl = true))
         assertNull(map(Key.F, alt = true))
     }
+
+    private fun navigate(
+        key: Key,
+        shift: Boolean = false,
+        ctrl: Boolean = false,
+        alt: Boolean = false,
+    ): EditorNavigation? =
+        EditorKeymap.resolveNavigation(
+            key = key,
+            shift = shift,
+            ctrlOrMeta = ctrl,
+            alt = alt,
+        )
+
+    @Test
+    fun arrowsBecomeNavigation() {
+        assertEquals(
+            EditorNavigation(EditorNavKey.Down),
+            navigate(Key.DirectionDown),
+        )
+        assertEquals(EditorNavigation(EditorNavKey.Left), navigate(Key.DirectionLeft))
+        assertEquals(EditorNavigation(EditorNavKey.Right), navigate(Key.DirectionRight))
+        assertEquals(EditorNavigation(EditorNavKey.Up), navigate(Key.DirectionUp))
+    }
+
+    @Test
+    fun shiftMeansExtend() {
+        assertEquals(
+            EditorNavigation(EditorNavKey.Right, extend = true),
+            navigate(Key.DirectionRight, shift = true),
+        )
+        assertEquals(
+            EditorNavigation(EditorNavKey.Up, extend = true),
+            navigate(Key.DirectionUp, shift = true),
+        )
+    }
+
+    @Test
+    fun ctrlAndAltOnHorizontalKeysWalkWords() {
+        assertEquals(
+            EditorNavigation(EditorNavKey.Left, wordWise = true),
+            navigate(Key.DirectionLeft, ctrl = true),
+        )
+        assertEquals(
+            EditorNavigation(EditorNavKey.Right, wordWise = true),
+            navigate(Key.DirectionRight, alt = true),
+        )
+        // 上下没有「按词」语义，修饰键不能把垂直移动变成词跳
+        assertEquals(EditorNavigation(EditorNavKey.Down), navigate(Key.DirectionDown, ctrl = true))
+    }
+
+    @Test
+    fun fullSizeHomeEndKeysMapAndModifiersChangeRange() {
+        assertEquals(EditorNavigation(EditorNavKey.Home), navigate(Key.MoveHome))
+        assertEquals(EditorNavigation(EditorNavKey.End), navigate(Key.MoveEnd))
+        // 小键盘上的 Home/End 是另一码位，笔记本外接键盘常用
+        assertEquals(EditorNavigation(EditorNavKey.Home), navigate(Key.NumPadMoveHome))
+        assertEquals(EditorNavigation(EditorNavKey.End), navigate(Key.NumPadMoveEnd))
+        assertEquals(
+            EditorNavigation(EditorNavKey.Home, toDocumentEdge = true),
+            navigate(Key.MoveHome, ctrl = true),
+        )
+        assertEquals(
+            EditorNavigation(EditorNavKey.End, extend = true, toDocumentEdge = true),
+            navigate(Key.MoveEnd, shift = true, ctrl = true),
+        )
+    }
+
+    @Test
+    fun nonNavigationKeysAreNotNavigation() {
+        assertNull(navigate(Key.A))
+        assertNull(navigate(Key.Tab))
+        assertNull(navigate(Key.Escape))
+        assertNull(navigate(Key.Delete))
+        assertNull(navigate(Key.Backspace))
+        assertNull(navigate(Key.Z, ctrl = true))
+    }
 }
