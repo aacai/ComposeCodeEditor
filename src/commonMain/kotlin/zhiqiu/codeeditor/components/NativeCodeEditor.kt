@@ -276,9 +276,6 @@ private const val CONTENT_END_PADDING_CHARS = 4
  */
 private const val MAX_RENDER_CHARS = 12_000
 
-/** 选区停稳到镜像进输入层的等待：拖选每帧都在改选区，逐帧 edit 就是旧「冻结输入层」躲开的开销。 */
-private const val SELECTION_MIRROR_DELAY_MS = 120L
-
 /** 超长行切片窗口两侧预留字符数，避免横向滚动时频繁露白。 */
 internal const val SLICE_MARGIN_COLS = 200
 
@@ -1811,6 +1808,7 @@ val (rawLine, _) =
                             charWidthPx = sliceCharWidthPx,
                             viewportWidthPx = with(density) { viewportWidth.toPx() },
                             isWordWrap = state.isWordWrap,
+                            selectionDragging = isSelecting || isHandleDragging,
                             onSelectionStarted = onSelectionStarted,
                             onSelectionUpdated = onSelectionUpdated,
                             onSelectionBoxChanged = onSelectionBoxChanged,
@@ -2598,6 +2596,7 @@ private fun EditorInputLayerHost(
     charWidthPx: Float = 0f,
     viewportWidthPx: Float = 0f,
     isWordWrap: Boolean = false,
+    selectionDragging: Boolean = false,
     onLineLongPress: (line: Int, col: Int) -> Unit = { _, _ -> },
     onSelectionStarted: (line: Int, col: Int) -> Unit = { _, _ -> },
     onSelectionUpdated: (line: Int, col: Int) -> Unit = { _, _ -> },
@@ -2675,6 +2674,7 @@ private fun EditorInputLayerHost(
         charWidthPx = charWidthPx,
         viewportWidthPx = viewportWidthPx,
         isWordWrap = isWordWrap,
+        selectionDragging = selectionDragging,
         onLineLongPress = onLineLongPress,
         onNavigationKey = onNavigationKey,
         modifier = modifier,
@@ -2723,6 +2723,8 @@ private fun InputLayer(
     charWidthPx: Float = 0f,
     viewportWidthPx: Float = 0f,
     isWordWrap: Boolean = false,
+    // 拖拽中选区每帧都在变：不扩窗、不镜像；松手后才按最终选区同步，紧接着的键入才能整体替换。
+    selectionDragging: Boolean = false,
     // 方向键导航交给上层 EditorInputLayerHost：只有它拿得到整篇 lines、当前选区与选区回调。
     // 返回 true 表示已消费，不能再让 BasicTextField 在自己的单行缓冲里挪一次插入点（跨行、跨窗口都会算错）。
     onNavigationKey: (EditorNavigation) -> Boolean = { false },
@@ -2730,7 +2732,6 @@ private fun InputLayer(
     onLineLongPress: (line: Int, col: Int) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
-    val initialCol = cursorColumn.coerceIn(0, line.length)
     // 超长行窗口化：持久输入层同样只持有光标附近的窗口文本，避免 BasicTextField 一次性 layout
     // 十几万字符卡死。实际显示由背后 ReadOnlyLine（已切片）负责，本层仅承载输入与光标。
     // 换行模式：输入层是单行窗口，始终窗口化（贴在光标所在视觉行，行切片的镜像）。
@@ -2740,7 +2741,7 @@ private fun InputLayer(
     // - 非换行超长行：跟随横向滚动（computeSuperLongSliceBounds），光标必然在窗口内；
     // - 换行模式：窗口 = 光标所在视觉行的列区间（winStart = 行首列，与可见行切片对齐），
     //   保证「可见即可编辑、点击列精确映射」。
-    val (winStart, winEnd) =
+    val (baseWinStart, baseWinEnd) =
         if (isSuperLongInput) {
             if (isWordWrap) {
                 val start = (cursorColumn / inputVisCols) * inputVisCols
@@ -2758,8 +2759,24 @@ private fun InputLayer(
         } else {
             0 to line.length
         }
-    val windowText = if (isSuperLongInput) line.substring(winStart, winEnd) else line
-    val localInitialCol = if (isSuperLongInput) (cursorColumn - winStart).coerceIn(0, windowText.length) else initialCol
+    // 单行选区可能跨出基窗口（换行跨视觉行、超长行滚出视野）。把窗口扩到覆盖整段选区，
+    // 键入/删除才换得掉整段；扩不下就按未镜像处理，交回宿主对整篇文档替换。
+    // 拖拽中不扩：选区每帧都变，逐帧重写字段文本正是当初要躲的开销。
+    val selectionWindow =
+        if (selectionStart != null && selectionEnd != null && !selectionDragging) {
+            val start = minOf(baseWinStart, selectionStart).coerceIn(0, line.length)
+            val end = maxOf(baseWinEnd, selectionEnd).coerceIn(start, line.length)
+            if (end - start <= MAX_RENDER_CHARS) start to end else null
+        } else {
+            null
+        }
+    val winStart = selectionWindow?.first ?: baseWinStart
+    val winEnd = selectionWindow?.second ?: baseWinEnd
+    val canAcceptInput = acceptInput && (selectionStart == null || selectionWindow != null)
+    val effectiveUnmirroredSelection =
+        unmirroredSelection || (selectionStart != null && selectionWindow == null)
+    val windowText = if (winStart == 0 && winEnd == line.length) line else line.substring(winStart, winEnd)
+    val localInitialCol = (cursorColumn - winStart).coerceIn(0, windowText.length)
     val textFieldState =
         rememberTextFieldState(
             initialText = windowText,
@@ -2769,14 +2786,14 @@ private fun InputLayer(
     val currentLine by rememberUpdatedState(line)
     val currentCol by rememberUpdatedState(cursorColumn)
     val currentLineIndex by rememberUpdatedState(lineIndex)
-    val acceptInputState by rememberUpdatedState(acceptInput)
+    val acceptInputState by rememberUpdatedState(canAcceptInput)
     val latestOnLineContentChange by rememberUpdatedState(onLineContentChange)
     val latestOnCursorChange by rememberUpdatedState(onCursorChange)
     val latestOnEnterKey by rememberUpdatedState(onEnterKey)
     val latestOnEditorShortcut by rememberUpdatedState(onEditorShortcut)
     val latestOnNavigationKey by rememberUpdatedState(onNavigationKey)
     val latestOnPasteText by rememberUpdatedState(onPasteText)
-    val latestUnmirroredSelection by rememberUpdatedState(unmirroredSelection)
+    val latestUnmirroredSelection by rememberUpdatedState(effectiveUnmirroredSelection)
     val latestOnSelectionEdit by rememberUpdatedState(onSelectionEdit)
     // 点击映射用「当前窗口/字宽」而非字段内部状态，保证超长行滚到行尾后点击列始终正确（VSCode 行为）
     val latestWinStart by rememberUpdatedState(winStart)
@@ -2797,8 +2814,8 @@ private fun InputLayer(
     // 外部状态（行切换 / 撤销 / Enter 后换行）同步进 TextFieldState；仅文本不一致时覆盖，
     // 避免与 IME 组合态抢 selection。
     // 只读时跳过：该层透明不可见，移动光标再重排 BasicTextField 纯属浪费（卡顿来源）。
-    LaunchedEffect(line, cursorColumn, acceptInput, winStart, winEnd) {
-        if (!acceptInput) return@LaunchedEffect
+    LaunchedEffect(line, cursorColumn, canAcceptInput, winStart, winEnd) {
+        if (!canAcceptInput) return@LaunchedEffect
         appliedWinStart = winStart
         appliedWinEnd = winEnd
         val col = (cursorColumn - winStart).coerceIn(0, windowText.length)
@@ -2816,20 +2833,21 @@ private fun InputLayer(
         }
     }
 
-    // 选区停稳后才镜像进输入层：拖拽每帧都在改选区，逐帧 edit 就是原来冻结输入层要躲开的开销。
+    // 选区一停稳就镜像进输入层，紧接着的键入才能整体替换。拖拽期间 canAcceptInput 为假
+    // （不扩窗、不镜像），所以这里不必再用时间去抖。
     var mirroredSelection by remember { mutableStateOf<TextRange?>(null) }
-    LaunchedEffect(selectionStart, selectionEnd, appliedWinStart, appliedWinEnd) {
+    LaunchedEffect(selectionStart, selectionEnd, appliedWinStart, appliedWinEnd, canAcceptInput) {
         val start = selectionStart
         val end = selectionEnd
-        if (!acceptInput || start == null || end == null) {
+        if (!canAcceptInput || start == null || end == null) {
             mirroredSelection = null
             return@LaunchedEffect
         }
-        delay(SELECTION_MIRROR_DELAY_MS)
+        val windowLength = appliedWinEnd - appliedWinStart
         val local =
             TextRange(
-                (start - appliedWinStart).coerceIn(0, appliedWinEnd),
-                (end - appliedWinStart).coerceIn(0, appliedWinEnd),
+                (start - appliedWinStart).coerceIn(0, windowLength),
+                (end - appliedWinStart).coerceIn(0, windowLength),
             )
         mirroredSelection = local
         if (textFieldState.selection != local) {
@@ -2839,8 +2857,8 @@ private fun InputLayer(
 
     // 光标 reveal（仅光标/行变化时触发，不因滚动触发，避免「滚离光标后被拉回」）：
     // 非换行窗口跟随滚动，若光标被键盘/IME 移出窗口，把窗口滚回光标处，保证键入落点正确（VSCode 行为）。
-    LaunchedEffect(line, cursorColumn, acceptInput) {
-        if (!acceptInput || selectionStart != null || !isSuperLongInput || isWordWrap) {
+    LaunchedEffect(line, cursorColumn, canAcceptInput) {
+        if (!canAcceptInput || selectionStart != null || !isSuperLongInput || isWordWrap) {
             return@LaunchedEffect
         }
         val scrollCols =

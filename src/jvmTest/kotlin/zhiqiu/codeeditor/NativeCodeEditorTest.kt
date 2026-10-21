@@ -494,6 +494,8 @@ class NativeCodeEditorTest {
         typed: String,
         cursorLine: Int,
         cursorColumn: Int,
+        settleSelection: Boolean = true,
+        isWordWrap: Boolean = false,
     ): List<Pair<Int, String>> {
         val changes = mutableListOf<Pair<Int, String>>()
         val content = LineBuffer(initialText)
@@ -504,6 +506,7 @@ class NativeCodeEditorTest {
                     cursorLine = cursorLine,
                     cursorColumn = cursorColumn,
                     isReadOnly = false,
+                    isWordWrap = isWordWrap,
                     language = EditorLanguage.PlainText,
                 )
             )
@@ -536,8 +539,10 @@ class NativeCodeEditorTest {
             awaitIdle()
             // 注入选区 = 用户刚拖选完松手，等输入层把它镜像进字段
             selection?.let { state.value = state.value.copy(selection = it) }
-            mainClock.advanceTimeBy(300)
-            awaitIdle()
+            if (settleSelection) {
+                mainClock.advanceTimeBy(300)
+                awaitIdle()
+            }
             onNodeWithTag("editor-basictextfield").performTextInput(typed)
             mainClock.advanceTimeBy(300)
             awaitIdle()
@@ -569,6 +574,41 @@ class NativeCodeEditorTest {
     fun typingOverMultiLineSelectionStaysFrozen() {
         val changes = typeOverInjectedSelection("foo\nbar", SelectionRange(0, 1, 1, 2), "a", cursorLine = 1, cursorColumn = 3)
         assertTrue(changes.isEmpty(), "跨行选区不该被单行输入层改写，实际收到 $changes")
+    }
+
+    // 用户选完立刻敲字是常态：不能等镜像的 120ms 过去，否则退化成在旧光标处插入。
+    @Test
+    fun typingImmediatelyAfterSelectingStillReplacesTheSelection() {
+        assertEquals(
+            listOf(0 to "a"),
+            typeOverInjectedSelection(
+                "foo",
+                SelectionRange(0, 0, 0, 3),
+                "a",
+                cursorLine = 0,
+                cursorColumn = 3,
+                settleSelection = false,
+            ),
+            "选区还没镜像就键入，也必须整体替换",
+        )
+    }
+
+    // 换行模式下选区跨多个视觉行；输入层只持有光标那一行，镜像不能只剩该行那一段。
+    @Test
+    fun typingOverSelectionSpanningWrappedRowsReplacesAllOfIt() {
+        val lineText = "a".repeat(3_000)
+        assertEquals(
+            listOf(0 to "x" + "a".repeat(1_500)),
+            typeOverInjectedSelection(
+                lineText,
+                SelectionRange(0, 0, 0, 1_500),
+                "x",
+                cursorLine = 0,
+                cursorColumn = 1_500,
+                isWordWrap = true,
+            ),
+            "跨视觉行的选区必须整体替换，不能只换光标所在视觉行那一段",
+        )
     }
 
     // 回归：换行模式 + 括号引导线/配对高亮位于远超首屏的全局列上，打开即崩溃
@@ -2203,6 +2243,26 @@ class NativeCodeEditorTest {
             )
         assertEquals(listOf("type:x"), probe.clipboardCalls)
         assertEquals(listOf("x    println(1)", "}", ""), probe.lines)
+    }
+
+    // 超长行的输入层只持有光标附近的窗口。选区比窗口大时，镜像会截断，
+    // 键入只能换掉窗口那段、其余仍留在正文里；这种选区必须交回宿主整篇替换。
+    @Test
+    fun typingOverASelectionWiderThanTheInputWindowReplacesAllOfIt() {
+        val lineText = "a".repeat(20_000)
+        val probe =
+            driveKeyboard(
+                initialText = "$lineText\n",
+                startLine = 0,
+                startColumn = 0,
+                steps =
+                    listOf(
+                        KeyboardStep.Select(0, 0, 0, lineText.length),
+                        KeyboardStep.Press(Key.X),
+                    ),
+            )
+        assertEquals(listOf("type:x"), probe.clipboardCalls)
+        assertEquals("x", probe.lines[0], "整行选区必须整体替换，不能只换掉窗口那段")
     }
 
     @Test
