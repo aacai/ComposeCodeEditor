@@ -12,7 +12,15 @@ object DefaultSyntaxHighlighterProvider : SyntaxHighlighterProvider {
 
 object SyntaxHighlighterRegistry {
     @Volatile
-    var provider: SyntaxHighlighterProvider = DefaultSyntaxHighlighterProvider
+    var provider: SyntaxHighlighterProvider = IncrementalHighlighterProvider
 
     fun resolve(language: EditorLanguage): SyntaxHighlighter = provider.create(language)
+
+    fun useDefaultRegex() {
+        provider = DefaultSyntaxHighlighterProvider
+    }
+
+    fun useIncremental() {
+        provider = IncrementalHighlighterProvider
+    }
 }
