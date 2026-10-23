@@ -127,6 +127,7 @@ import zhiqiu.codeeditor.text.EditorKeymap
 import zhiqiu.codeeditor.text.EditorNavigation
 import zhiqiu.codeeditor.text.EditorShortcut
 import zhiqiu.codeeditor.render.EditorTheme
+import zhiqiu.codeeditor.render.MaxLineWidthTracker
 import zhiqiu.codeeditor.render.applyLineDecorations
 import zhiqiu.codeeditor.render.buildLineDecorations
 import zhiqiu.codeeditor.text.FoldViewport
@@ -574,6 +575,7 @@ fun NativeCodeEditor(
         }
     // 可见行实测字宽：首帧用 cellCharWidthDp，layout 后改用真实平均宽，滚动切片才跟得上 ASCII。
     val observedCellWidthPx = remember(state.fontSize) { mutableFloatStateOf(0f) }
+    val maxWidthTracker = remember(state.content, state.fontSize) { MaxLineWidthTracker() }
     val maxLineWidths by
         remember(
             lines,
@@ -582,16 +584,10 @@ fun NativeCodeEditor(
             measureMaxWidth,
             wideCharWidthDp,
             observedCellWidthPx.floatValue,
+            maxWidthTracker,
         ) {
             val style = TextStyle(fontSize = state.fontSize.sp, fontFamily = editorFont)
-            // 超长行（如压缩 JS/JSON）精确 measure 一次就要 layout 十几万字符，对大文件逐行 measure
-            // 会严重卡顿/无响应；且其宽度必然超过 Compose 单维上限。此时回退「按字符宽度分类估算」：
-            // trueWidth 用它撑开横向滚动（VSCode 语义可滚到行尾），clamped 用上限做行盒约束防崩溃。
-            // 单元格宽（实测优先，未测得用 cellCharWidthDp）必须与切片/输入层窗口的 charWidthPx
-            // 同源：否则滚动范围按 W 宽（~2x）估算、窗口按实际单元格宽映射，maxValue 虚高，
-            // 滚到行尾附近只到范围中点，且滚到 maxValue 时窗口被钳到行尾（空白）。
-            // 估算必须按字符宽度分类：JSONL 常含大量 CJK（约 2 倍宽），若一律用 ASCII 单元格宽，
-            // 会低估真实行宽 → 横向滚动滚不到真正行尾（末尾一段内容被截在视口右侧之外）。
+            // 超长行精确 measure 会卡；回退定宽分类估算。单元格宽须与切片 charWidthPx 同源。
             val cellWidthPx =
                 if (observedCellWidthPx.floatValue > 0f) {
                     observedCellWidthPx.floatValue
@@ -599,21 +595,10 @@ fun NativeCodeEditor(
                     with(density) { cellCharWidthDp.toPx() }
                 }
             val wideCharWidthPx = with(density) { wideCharWidthDp.toPx() }
-            val maxLen = lines.maxOfOrNull { it.length } ?: 0
-            val estimatePx =
-                (lines.maxOfOrNull { line ->
-                    // Double 累加：194k 次 Float 累加会带 +0.2% 系统性偏差（实测 +3522px），
-                    // 会导致行尾滚动窗口坍缩、点击落空。
-                    var w = 0.0
-                    for (i in line.indices) {
-                        if (line[i].code > 0x7F) {
-                            w += wideCharWidthPx
-                        } else {
-                            w += cellWidthPx
-                        }
-                    }
-                    w.toFloat()
-                } ?: 0f).coerceAtLeast(cellWidthPx * maxLen)
+            val estimated =
+                maxWidthTracker.estimate(lines, cellWidthPx, wideCharWidthPx)
+            val estimatePx = estimated.widthPx
+            val maxLen = estimated.maxLen
             if (DEBUG_SUPERLONG) {
                 println(
                     "NATIVE-WIDTH maxLen=$maxLen cell=$cellWidthPx wide=$wideCharWidthPx " +
@@ -621,7 +606,8 @@ fun NativeCodeEditor(
                 )
             }
             val trueMaxPx: Float =
-                if (measureMaxWidth && estimatePx < MAX_CONSTRAINT_WIDTH_PX) {
+                if (measureMaxWidth && estimatePx < MAX_CONSTRAINT_WIDTH_PX && lines.size <= 200) {
+                    // 精确 measure 仅小文件；大文件用增量估算即可
                     (lines.maxOfOrNull { line ->
                         textMeasurer
                             .measure(
@@ -1778,8 +1764,19 @@ val (rawLine, _) =
                                             },
                                         rowLayouts = if (state.isWordWrap) rowLayouts else null,
                                         rowInLine = rowInLine,
-                                        cursorColumn =
-                                            if (cursor.line == logicalIndex) cursor.column else 0,
+                                        cursorColumn = run {
+                                            // 仅旧/新光标行 derived 结果变化时重组，换行不伤全表
+                                            val col by remember(logicalIndex) {
+                                                derivedStateOf {
+                                                    if (cursor.line == logicalIndex) {
+                                                        cursor.column
+                                                    } else {
+                                                        0
+                                                    }
+                                                }
+                                            }
+                                            col
+                                        },
                                     )
                                     if (isCollapsedFold && rowInLine == 0) {
                                         FoldEllipsisBadge(
