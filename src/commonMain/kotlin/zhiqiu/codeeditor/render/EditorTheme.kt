@@ -41,7 +41,7 @@ data class EditorTheme(
     val error: Color = Color(0xFFD32F2F),
 ) {
     companion object {
-        fun light(): EditorTheme =
+        val Light: EditorTheme =
             EditorTheme(
                 background = Color(0xFFFAFAFA),
                 foreground = Color(0xFF333333),
@@ -51,15 +51,15 @@ data class EditorTheme(
                 selectionBackground = Color(0xFFE3F2FD),
                 findBackground = Color(0xFFFFE082),
                 findCurrentBackground = Color(0xFFFFB300),
-                keyword = Color(0xFF1976D2), // 蓝色
-                string = Color(0xFF388E3C), // 绿色
-                comment = Color(0xFF757575), // 灰色
-                number = Color(0xFFF57C00), // 橙色
-                type = Color(0xFF7B1FA2), // 紫色
-                function = Color(0xFFC2185B), // 粉红色
-                operator = Color(0xFF424242), // 深灰色
-                punctuation = Color(0xFF616161), // 灰色
-                annotation = Color(0xFF5C6BC0), // 靛蓝（注解）
+                keyword = Color(0xFF1976D2),
+                string = Color(0xFF388E3C),
+                comment = Color(0xFF757575),
+                number = Color(0xFFF57C00),
+                type = Color(0xFF7B1FA2),
+                function = Color(0xFFC2185B),
+                operator = Color(0xFF424242),
+                punctuation = Color(0xFF616161),
+                annotation = Color(0xFF5C6BC0),
                 bracketGuide = Color(0xFFD0D0D0),
                 bracketGuideActive = Color(0xFF7A7A7A),
                 bracketMatchBackground = Color(0x33000000),
@@ -67,7 +67,7 @@ data class EditorTheme(
                 error = Color(0xFFD32F2F),
             )
 
-        fun dark(): EditorTheme =
+        val Dark: EditorTheme =
             EditorTheme(
                 background = Color(0xFF1E1E1E),
                 foreground = Color(0xFFD4D4D4),
@@ -77,21 +77,25 @@ data class EditorTheme(
                 selectionBackground = Color(0xFF264F78),
                 findBackground = Color(0xFF6B5B00),
                 findCurrentBackground = Color(0xFFA6800C),
-                keyword = Color(0xFF569CD6), // 浅蓝色
-                string = Color(0xFFCE9178), // 浅橙色
-                comment = Color(0xFF9E9E9E), // 灰色
-                number = Color(0xFFB5CEA8), // 浅绿色
-                type = Color(0xFF4EC9B0), // 青绿色
-                function = Color(0xFFDCDCAA), // 浅黄色
-                operator = Color(0xFFD4D4D4), // 浅灰色
-                punctuation = Color(0xFFD4D4D4), // 浅灰色
-                annotation = Color(0xFF9CDCFE), // 浅蓝色（注解）
+                keyword = Color(0xFF569CD6),
+                string = Color(0xFFCE9178),
+                comment = Color(0xFF9E9E9E),
+                number = Color(0xFFB5CEA8),
+                type = Color(0xFF4EC9B0),
+                function = Color(0xFFDCDCAA),
+                operator = Color(0xFFD4D4D4),
+                punctuation = Color(0xFFD4D4D4),
+                annotation = Color(0xFF9CDCFE),
                 bracketGuide = Color(0xFF404040),
                 bracketGuideActive = Color(0xFF707070),
                 bracketMatchBackground = Color(0x33000000),
                 bracketMatchBorder = Color(0xFF888888),
                 error = Color(0xFFF48771),
             )
+
+        fun light(): EditorTheme = Light
+
+        fun dark(): EditorTheme = Dark
     }
 }
 
