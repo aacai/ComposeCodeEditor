@@ -20,61 +20,68 @@ enum class FileSizeLevel {
 /**
  * 性能模式。
  * 决定编辑器在处理大文件时采用的功能降级策略。
+ *
+ * 语法高亮策略（对齐 VS Code）：
+ * - [FULL]：后台全文渐进 tokenize（状态 + token）
+ * - [PERFORMANCE] / [MINIMAL]：后台只预热词法状态脊；token 按视口惰性生成，无行数硬顶
  */
 enum class PerformanceMode {
     /**
      * 完整功能模式。
      * - 适用于小文件
      * - 所有编辑器功能可用
-     * - 完整语法高亮、代码折叠、搜索等
+     * - 后台全文语法高亮、代码折叠、搜索等
      */
     FULL {
         override val enableSyntaxHighlight: Boolean = true
+        override val eagerFullHighlight: Boolean = true
         override val enableCodeFolding: Boolean = true
         override val enableSearch: Boolean = true
-        override val maxHighlightLines: Int = Int.MAX_VALUE
         override val chunkSize: Int = Int.MAX_VALUE
     },
 
     /**
      * 性能优化模式。
      * - 适用于中等文件
-     * - 语法高亮限制行数
-     * - 禁用部分耗时功能
+     * - 视口惰性高亮 + 后台状态预热（无行数硬顶）
+     * - 禁用代码折叠等耗时结构分析
      */
     PERFORMANCE {
         override val enableSyntaxHighlight: Boolean = true
+        override val eagerFullHighlight: Boolean = false
         override val enableCodeFolding: Boolean = false
         override val enableSearch: Boolean = true
-        override val maxHighlightLines: Int = 5000
         override val chunkSize: Int = 1000
     },
 
     /**
      * 最小化模式。
      * - 适用于大文件和超大文件
-     * - 禁用所有耗时功能
-     * - 仅保留基本编辑能力
+     * - 仍提供视口语法高亮（与 VS Code 一致，不因体积关高亮）
+     * - 关闭搜索/折叠等更重的能力
      */
     MINIMAL {
-        override val enableSyntaxHighlight: Boolean = false
+        override val enableSyntaxHighlight: Boolean = true
+        override val eagerFullHighlight: Boolean = false
         override val enableCodeFolding: Boolean = false
         override val enableSearch: Boolean = false
-        override val maxHighlightLines: Int = 0
         override val chunkSize: Int = 500
     };
 
-    /** 是否启用语法高亮 */
+    /** 是否启用语法高亮（含视口惰性） */
     abstract val enableSyntaxHighlight: Boolean
+
+    /**
+     * 是否后台全文写入 token。
+     * false 时只预热 [zhiqiu.codeeditor.highlight.HighlightCache] 状态脊，token 由视口触发。
+     */
+    abstract val eagerFullHighlight: Boolean
 
     /** 是否启用代码折叠 */
     abstract val enableCodeFolding: Boolean
 
     /** 是否启用搜索功能 */
     abstract val enableSearch: Boolean
-
-    /** 语法高亮的最大行数限制 */
-    abstract val maxHighlightLines: Int
 
     /** 分块大小（用于虚拟化加载） */
     abstract val chunkSize: Int

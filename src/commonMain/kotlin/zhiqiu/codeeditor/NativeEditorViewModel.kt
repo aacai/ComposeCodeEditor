@@ -1329,11 +1329,10 @@ class NativeEditorViewModel(
     ) {
         val lineCount = newContent.lineCount
         val performanceMode = LargeFileStrategy.getPerformanceMode(fileSize, lineCount)
-        // 高亮器就位后先占位，立即显示文本（无高亮），再后台渐进上色，
-        // 避免大文件一次性 tokenize 阻塞首屏
+        // 高亮器就位后先占位，立即显示文本（无高亮），再后台渐进上色 / 预热状态脊，
+        // 避免大文件一次性 tokenize 阻塞首屏；视口滚动会惰性补 token（无行数硬顶）
         highlighter = createSyntaxHighlighter(language)
-        highlightCache =
-            HighlightCache(highlighter, lineCount, maxLines = performanceMode.maxHighlightLines)
+        highlightCache = HighlightCache(highlighter, lineCount)
         val lines = newContent.getLines()
         highlightCache.prefill(lines)
         val target = clampSessionToContent(session, newContent)
@@ -2013,16 +2012,16 @@ class NativeEditorViewModel(
     }
 
     /**
-     * 分块渐进高亮：把整份文件的 tokenize 拆成小块，每块之间 yield() 让出主线程，
+     * 分块渐进高亮 / 状态预热：把工作拆成小块，每块之间 yield() 让出主线程，
      * 避免大文件一次性 tokenize 阻塞首屏（切换语言 / 加载大文件的 ANR 根因）。
      *
+     * - [PerformanceMode.eagerFullHighlight]=true（FULL）：写入 token + 状态，适合小文件
+     * - 否则：只 [HighlightCache.warmStates] 推进状态脊，token 由视口 [tokenizeVisibleRange] 惰性生成
+     *   （对齐 VS Code：大文件滚到底仍有正确跨行高亮，且无行数硬顶）
+     *
      * 关键：本任务运行在 viewModelScope 默认的主线程调度器上（而非后台线程）。
-     * HighlightCache 的 token 列表会被主线程的渲染（getAnnotatedLine）、输入（updateLine）
-     * 以及本任务同时访问；若放在后台线程，就会与主线程并发读写同一个 ArrayList，
-     * 造成结构性并发修改 → 索引越界 / substring 越界 → 崩溃（这正是「切换语言崩溃」
-     * 和「Java 预览时输入崩溃」的真正根因）。改为单线程 + 分块 yield 后，
-     * 三者严格串行执行，从根上消除数据竞争，同时靠 yield 保持界面流畅、不 ANR。
-     * 进行中的任务会被新的加载/重建通过代际(generation)及时停止。
+     * HighlightCache 的 token/状态会被主线程的渲染、输入以及本任务同时访问；
+     * 放在后台线程会与主线程并发改同一结构 → 崩溃。单线程 + 分块 yield 消除数据竞争。
      */
     private fun startIncrementalHighlight(lines: List<String>) {
         val previous = highlightJob
@@ -2031,38 +2030,42 @@ class NativeEditorViewModel(
                 try {
                     previous?.cancelAndJoin()
                     if (!isActive) return@launch
-                    val expectedGen = highlightCache.generation
-                    // 后台整篇 tokenize 恰是大文件最贵的一步：按模式的上限截断，MINIMAL 干脆不跑
                     val mode = _state.value.performanceMode
-                    val total =
-                        if (mode.enableSyntaxHighlight) {
-                            minOf(lines.size, mode.maxHighlightLines)
-                        } else {
-                            0
-                        }
+                    if (!mode.enableSyntaxHighlight || lines.isEmpty()) return@launch
+                    val expectedGen = highlightCache.generation
+                    val total = lines.size
                     var from = 0
-                    // 单线程分块：块偏小以缩短每次占用主线程的时长，靠帧间 yield 累进上色
-                    val chunk = 600
+                    // 单线程分块：块偏小以缩短每次占用主线程的时长，靠帧间 yield 累进
+                    val chunk = if (mode.eagerFullHighlight) 600 else 1200
                     while (from < total) {
                         if (!isActive) break
                         val to = (from + chunk).coerceAtMost(total)
-                        val result = highlightCache.tokenizeRange(from, to, lines, expectedGen)
+                        val result =
+                            if (mode.eagerFullHighlight) {
+                                highlightCache.tokenizeRange(from, to, lines, expectedGen)
+                            } else {
+                                highlightCache.warmStates(to, lines, expectedGen)
+                            }
                         if (result == null) break
                         from = to
-                        _state.value =
-                            _state.value.copy(
-                                highlightVersion = _state.value.highlightVersion + 1,
-                            )
+                        // FULL：token 变了要升 highlightVersion；状态预热不升版，
+                        // 视口 tokenize 靠 HighlightCache.displayEpoch 驱动重绘
+                        if (mode.eagerFullHighlight) {
+                            _state.value =
+                                _state.value.copy(
+                                    highlightVersion = _state.value.highlightVersion + 1,
+                                )
+                        }
                         yield()
                     }
                 } catch (c: CancellationException) {
                     throw c
                 } catch (t: Throwable) {
-                // 后台高亮异常不影响文本可用性：降级为无高亮，并上报错误供定位
-                reportError("IncrementalHighlight", t)
+                    // 后台高亮异常不影响文本可用性：降级为无高亮，并上报错误供定位
+                    reportError("IncrementalHighlight", t)
+                }
             }
     }
-}
 
     /**
      * 以纯文本载入编辑器（不走文件 IO），用于内存内容编辑场景（如 smali 编辑）。

@@ -1763,34 +1763,53 @@ class NativeEditorViewModelTest {
         (0 until count).joinToString("\n") { "val v$it = 1" }
 
     @Test
-    fun mediumDocumentDegradesToPerformanceModeAndCapsHighlightLines() =
+    fun mediumDocumentDegradesToPerformanceModeWithViewportHighlight() =
         runTest {
             // 1.2 万行、体积不足 1MB：行数已越过 SMALL_LINE_THRESHOLD，进入 PERFORMANCE
             viewModel.loadContent(kotlinLines(12_000), "big.kt", EditorLanguage.Kotlin)
             advanceUntilIdle()
 
             assertEquals(PerformanceMode.PERFORMANCE, viewModel.state.value.performanceMode)
-            assertTrue(viewModel.highlightCache.getTokens(0).isNotEmpty())
+            assertTrue(viewModel.state.value.performanceMode.enableSyntaxHighlight)
+            assertFalse(viewModel.state.value.performanceMode.eagerFullHighlight)
+            // 后台只预热状态脊，不写全文 token
             assertTrue(
-                viewModel.highlightCache.getTokens(4_999).isNotEmpty(),
-                "上限内的行应被后台高亮",
+                viewModel.highlightCache.getStateReadyUpTo() >= 12_000,
+                "PERFORMANCE 应预热完整状态脊",
             )
             assertTrue(
                 viewModel.highlightCache.getTokens(5_000).isEmpty(),
-                "后台高亮止步于 maxHighlightLines",
+                "非视口行不应被后台写成 token",
+            )
+            // 视口跳到旧硬顶之外：仍应高亮（无行数上限）
+            val gen = viewModel.highlightCache.generation
+            val lines = viewModel.state.value.content.getLines()
+            viewModel.highlightCache.tokenizeVisibleRange(11_000, 11_020, lines, gen)
+            assertTrue(
+                viewModel.highlightCache.getTokens(11_000).isNotEmpty(),
+                "滚过原 5000 行硬顶后视口仍应有高亮",
             )
         }
 
     @Test
-    fun hugeDocumentDegradesToMinimalMode() =
+    fun hugeDocumentDegradesToMinimalModeButKeepsViewportHighlight() =
         runTest {
             viewModel.loadContent(kotlinLines(50_001), "huge.kt", EditorLanguage.Kotlin)
             advanceUntilIdle()
 
             assertEquals(PerformanceMode.MINIMAL, viewModel.state.value.performanceMode)
-            // MINIMAL 既关掉语法高亮，也不该排后台整篇 tokenize
-            assertFalse(viewModel.state.value.performanceMode.enableSyntaxHighlight)
-            assertTrue(viewModel.highlightCache.getTokens(0).isEmpty())
+            // MINIMAL 关闭搜索/折叠，但仍保留视口语法高亮（对齐 VS Code）
+            assertTrue(viewModel.state.value.performanceMode.enableSyntaxHighlight)
+            assertFalse(viewModel.state.value.performanceMode.eagerFullHighlight)
+            assertFalse(viewModel.state.value.performanceMode.enableSearch)
+            assertTrue(
+                viewModel.highlightCache.getStateReadyUpTo() >= 50_001,
+                "MINIMAL 也应预热状态脊，保证跳转高亮正确",
+            )
+            val gen = viewModel.highlightCache.generation
+            val lines = viewModel.state.value.content.getLines()
+            viewModel.highlightCache.tokenizeVisibleRange(49_900, 49_920, lines, gen)
+            assertTrue(viewModel.highlightCache.getTokens(49_900).isNotEmpty())
         }
 
     @Test

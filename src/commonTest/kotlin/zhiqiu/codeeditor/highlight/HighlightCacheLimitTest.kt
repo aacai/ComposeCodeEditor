@@ -2,11 +2,11 @@ package zhiqiu.codeeditor.highlight
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * [HighlightCache] 行数上限（PerformanceMode.maxHighlightLines）的行为：
- * 上限之外的行永远拿不到 token，渲染端因此退化为纯文本。
+ * 视口惰性高亮 + 状态脊：大文件滚到底仍应正确高亮，无行数硬顶。
  */
 class HighlightCacheLimitTest {
     /** 每行都产出一个覆盖整行的 token，便于断言「这行有没有被 tokenize」。 */
@@ -22,84 +22,95 @@ class HighlightCacheLimitTest {
             }
     }
 
+    /**
+     * 奇数行打开块注释深度，偶数行关闭——用来验证跳到文件尾时状态脊是否从第 0 行推过来。
+     */
+    private class AlternatingCommentHighlighter : SyntaxHighlighter {
+        override fun tokenize(
+            line: String,
+            prevState: HighlightState?,
+        ): Pair<List<Token>, HighlightState> {
+            val depth = prevState?.commentDepth ?: 0
+            val next =
+                when {
+                    depth > 0 -> HighlightState(commentDepth = 0)
+                    else -> HighlightState(commentDepth = 1)
+                }
+            val type = if (depth > 0) TokenType.Comment else TokenType.Keyword
+            return listOf(Token(0, line.length.coerceAtLeast(1), type)) to next
+        }
+    }
+
     private fun lines(count: Int) = (1..count).map { "line$it" }
 
-    private fun cache(
-        count: Int,
-        maxLines: Int? = null,
-    ): HighlightCache {
-        val cache =
-            if (maxLines == null) {
-                HighlightCache(EveryLineHighlighter())
-            } else {
-                HighlightCache(EveryLineHighlighter(), maxLines = maxLines)
-            }
-        cache.rebuild(lines(count))
-        return cache
-    }
-
     @Test
-    fun rebuildTokenizesEveryLineWithoutLimit() {
-        val cache = cache(count = 4)
+    fun rebuildTokenizesEveryLine() {
+        val cache = HighlightCache(EveryLineHighlighter())
+        cache.rebuild(lines(4))
         (0..3).forEach { assertTrue(cache.getTokens(it).isNotEmpty(), "line $it 应被高亮") }
+        assertEquals(4, cache.getStateReadyUpTo())
     }
 
     @Test
-    fun rebuildStopsAtLineLimit() {
-        val cache = cache(count = 6, maxLines = 3)
-        (0..2).forEach { assertTrue(cache.getTokens(it).isNotEmpty(), "line $it 应被高亮") }
-        (3..5).forEach { assertTrue(cache.getTokens(it).isEmpty(), "超出上限的 line $it 不应有 token") }
+    fun prefillLeavesStateSpineCold() {
+        val cache = HighlightCache(EveryLineHighlighter())
+        cache.prefill(lines(6))
+        assertEquals(0, cache.getStateReadyUpTo())
+        (0..5).forEach { assertTrue(cache.getTokens(it).isEmpty()) }
     }
 
     @Test
-    fun zeroLineLimitLeavesEverythingPlain() {
-        // MINIMAL 模式：maxHighlightLines = 0
-        val cache = cache(count = 3, maxLines = 0)
-        (0..2).forEach { assertTrue(cache.getTokens(it).isEmpty()) }
+    fun warmStatesAdvancesSpineWithoutTokens() {
+        val cache = HighlightCache(EveryLineHighlighter())
+        val ls = lines(6)
+        cache.prefill(ls)
+        assertEquals(4, cache.warmStates(4, ls, cache.generation))
+        assertEquals(4, cache.getStateReadyUpTo())
+        // 预热不写 token
+        (0..3).forEach { assertTrue(cache.getTokens(it).isEmpty()) }
     }
 
     @Test
-    fun tokenizeRangeStopsAtLineLimit() {
-        val cache = HighlightCache(EveryLineHighlighter(), maxLines = 3)
-        val lines = lines(6)
-        cache.prefill(lines)
-        val done = cache.tokenizeRange(0, 6, lines, cache.generation)
-        assertEquals(3, done, "只推进到上限行")
-        assertTrue(cache.getTokens(2).isNotEmpty())
-        assertTrue(cache.getTokens(3).isEmpty())
+    fun tokenizeVisibleRangeAtTailUsesStateSpine() {
+        val cache = HighlightCache(AlternatingCommentHighlighter())
+        val ls = lines(8)
+        cache.prefill(ls)
+        // 直接跳到尾部视口：应先推状态再 tokenize，第 7 行类型取决于脊
+        val done = cache.tokenizeVisibleRange(6, 8, ls, cache.generation)
+        assertEquals(8, done)
+        assertTrue(cache.getTokens(6).isNotEmpty())
+        assertTrue(cache.getTokens(7).isNotEmpty())
+        // 6 偶 → 进入时 depth=0 → Keyword；7 奇 → depth=1 → Comment
+        assertEquals(TokenType.Keyword, cache.getTokens(6).first().type)
+        assertEquals(TokenType.Comment, cache.getTokens(7).first().type)
+        assertEquals(8, cache.getStateReadyUpTo())
     }
 
     @Test
-    fun tokenizeRangeBeyondLimitReportsProgressInsteadOfStalling() {
-        val cache = cache(count = 6, maxLines = 3)
-        // 返回 fromIndex 而非 null：调用方据此正常收尾，不会当成代际失效重跑
-        assertEquals(4, cache.tokenizeRange(4, 6, lines(6), cache.generation))
-        assertTrue(cache.getTokens(4).isEmpty())
+    fun tokenizeVisibleRangeBeyondFormerHardCapStillHighlights() {
+        // 旧 PERFORMANCE 硬顶是 5000；这里直接测 6000+ 视口仍有 token
+        val cache = HighlightCache(EveryLineHighlighter(), lineCount = 6_200)
+        val ls = lines(6_200)
+        cache.prefill(ls)
+        val epochBefore = cache.displayEpoch
+        val done = cache.tokenizeVisibleRange(6_100, 6_120, ls, cache.generation)
+        assertNotNull(done)
+        assertEquals(6_120, done)
+        assertTrue(cache.getTokens(6_100).isNotEmpty())
+        assertTrue(cache.getTokens(6_119).isNotEmpty())
+        assertTrue(cache.displayEpoch > epochBefore, "视口写入应推进 displayEpoch")
     }
 
     @Test
-    fun tokenizeVisibleRangeHonorsLimit() {
-        val cache = HighlightCache(EveryLineHighlighter(), maxLines = 2)
-        val lines = lines(6)
-        cache.rebuild(lines)
+    fun updateLineInvalidatesSpineAndRepaints() {
+        val cache = HighlightCache(EveryLineHighlighter())
+        val ls = lines(4).toMutableList()
+        cache.rebuild(ls)
+        ls[1] = "changed"
+        val epochBefore = cache.displayEpoch
+        cache.updateLine(1, ls)
         assertTrue(cache.getTokens(1).isNotEmpty())
-        assertTrue(cache.getTokens(2).isEmpty())
-        // 跨上限的可见区间只处理到上限，越界区间直接原样返回、不做 tokenize
-        assertEquals(2, cache.tokenizeVisibleRange(0, 3, lines, cache.generation))
-        assertEquals(4, cache.tokenizeVisibleRange(4, 6, lines, cache.generation))
-        assertTrue(cache.getTokens(5).isEmpty())
-    }
-
-    @Test
-    fun updateLineBeyondLimitKeepsPlain() {
-        val cache = cache(count = 4, maxLines = 2)
-        val updated = listOf("a", "b", "c changed", "d")
-        cache.updateLine(3, updated)
-        assertTrue(cache.getTokens(3).isEmpty())
-        cache.updateLine(0, updated)
-        assertTrue(cache.getTokens(0).isNotEmpty(), "上限内的行照常重算")
-        // 状态向下传播也不能越过上限，否则降级等于没生效
-        assertTrue(cache.getTokens(1).isNotEmpty())
-        assertTrue(cache.getTokens(2).isEmpty())
+        assertTrue(cache.displayEpoch > epochBefore)
+        assertTrue(cache.getStateReadyUpTo() >= 2)
     }
 }

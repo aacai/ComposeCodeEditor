@@ -851,8 +851,16 @@ fun NativeCodeEditor(
         }
     }
 
-    // 滚动时动态更新可见行范围，触发按需高亮
-    LaunchedEffect(contentListState, foldViewport, highlightCache.generation) {
+    // 滚动时动态更新可见行范围，触发按需高亮（大文件无行数硬顶；跨行状态靠状态脊 ensure）
+    val syntaxHighlightEnabled = state.performanceMode.enableSyntaxHighlight
+    LaunchedEffect(
+        contentListState,
+        foldViewport,
+        highlightCache.generation,
+        syntaxHighlightEnabled,
+        state.contentRevision,
+    ) {
+        if (!syntaxHighlightEnabled) return@LaunchedEffect
         snapshotFlow {
             val visibleItems = contentListState.layoutInfo.visibleItemsInfo
             if (visibleItems.isEmpty()) {
@@ -871,15 +879,15 @@ fun NativeCodeEditor(
                 val (startLine, endLine) = range
                 highlightCache.updateVisibleRange(startLine, endLine + 1)
                 val currentGen = highlightCache.generation
-                scope.launch {
-                    highlightCache.tokenizeVisibleRange(
-                        startLine = startLine,
-                        endLine = endLine + 1,
-                        lines = lines,
-                        expectedGen = currentGen
-                    )
-                    highlightCache.trimInvisibleCache(threshold = 0.8f)
-                }
+                // 同步在本 collect 协程里做：与 ViewModel 高亮任务同属主线程调度串行；
+                // displayEpoch 在 tokenizeVisibleRange 内自增，驱动行级 remember 刷新
+                highlightCache.tokenizeVisibleRange(
+                    startLine = startLine,
+                    endLine = endLine + 1,
+                    lines = lines,
+                    expectedGen = currentGen,
+                )
+                highlightCache.trimInvisibleCache(threshold = 0.8f)
             }
         }
     }
@@ -1700,7 +1708,7 @@ val (rawLine, _) =
                                         highlightCache =
                                         highlightCache,
                                         highlightVersion =
-                                            state.highlightVersion,
+                                            state.highlightVersion + highlightCache.displayEpoch,
                                         isWordWrap = state.isWordWrap,
                                         isReadOnly = state.isReadOnly,
                                         enableSyntaxHighlight = state.performanceMode.enableSyntaxHighlight,
