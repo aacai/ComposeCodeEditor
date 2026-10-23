@@ -84,6 +84,7 @@ class PieceTreeBuffer(
         length += text.length
         lineCount += feeds
         lineStartsDirty = true
+        coalesceAdjacent()
     }
 
     fun delete(
@@ -100,6 +101,36 @@ class PieceTreeBuffer(
         lineCount -= removedFeeds
         if (lineCount < 1) lineCount = 1
         lineStartsDirty = true
+        coalesceAdjacent()
+    }
+
+    /** Rope 式替换：删 [offset, offset+count) 再插入 [text]。 */
+    fun replace(
+        offset: Int,
+        count: Int,
+        text: String,
+    ) {
+        if (count > 0) delete(offset, count)
+        if (text.isNotEmpty()) insert(offset.coerceIn(0, length), text)
+    }
+
+    fun getPieceCount(): Int = pieces.size
+
+    fun offsetAt(
+        lineNumber: Int,
+        column: Int,
+    ): Int {
+        ensureLineStarts()
+        require(lineNumber in 0 until lineCount) { "line $lineNumber / $lineCount" }
+        val start = lineStarts[lineNumber]
+        val lineEnd =
+            if (lineNumber + 1 < lineCount) {
+                val next = lineStarts[lineNumber + 1]
+                if (next > 0 && charAt(next - 1) == '\n') next - 1 else next
+            } else {
+                length
+            }
+        return (start + column.coerceAtLeast(0)).coerceAtMost(lineEnd)
     }
 
     fun replaceAll(text: String) {
@@ -275,6 +306,28 @@ class PieceTreeBuffer(
             if (charAt(i) == '\n') n++
         }
         return n
+    }
+
+    /** 合并同缓冲且首尾相接的相邻 piece，降低碎片。 */
+    private fun coalesceAdjacent() {
+        if (pieces.size < 2) return
+        var i = 0
+        while (i < pieces.size - 1) {
+            val a = pieces[i]
+            val b = pieces[i + 1]
+            if (a.bufferIndex == b.bufferIndex && a.start + a.length == b.start) {
+                pieces[i] =
+                    Piece(
+                        a.bufferIndex,
+                        a.start,
+                        a.length + b.length,
+                        a.lineFeeds + b.lineFeeds,
+                    )
+                pieces.removeAt(i + 1)
+            } else {
+                i++
+            }
+        }
     }
 
     companion object {

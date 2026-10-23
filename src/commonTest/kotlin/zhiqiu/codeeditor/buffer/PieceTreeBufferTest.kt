@@ -2,6 +2,7 @@ package zhiqiu.codeeditor.buffer
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class PieceTreeBufferTest {
     @Test
@@ -36,5 +37,22 @@ class PieceTreeBufferTest {
         assertEquals("middle", lines.getLine(1))
         lines.deleteLine(0)
         assertEquals(listOf("middle", "two"), lines.getLines())
+    }
+
+    @Test
+    fun replaceAndOffsetAt() {
+        val buf = PieceTreeBuffer("hello world")
+        buf.replace(6, 5, "piece")
+        assertEquals("hello piece", buf.getText())
+        assertEquals(6, buf.offsetAt(0, 6))
+    }
+
+    @Test
+    fun coalesceAdjacentPieces() {
+        val buf = PieceTreeBuffer("ab")
+        buf.insert(2, "c")
+        buf.insert(3, "d")
+        assertEquals("abcd", buf.getText())
+        assertTrue(buf.getPieceCount() <= 3)
     }
 }
