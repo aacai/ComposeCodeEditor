@@ -105,6 +105,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -126,6 +127,8 @@ import zhiqiu.codeeditor.text.EditorKeymap
 import zhiqiu.codeeditor.text.EditorNavigation
 import zhiqiu.codeeditor.text.EditorShortcut
 import zhiqiu.codeeditor.render.EditorTheme
+import zhiqiu.codeeditor.render.applyLineDecorations
+import zhiqiu.codeeditor.render.buildLineDecorations
 import zhiqiu.codeeditor.text.FoldViewport
 import zhiqiu.codeeditor.highlight.HighlightCache
 import zhiqiu.codeeditor.buffer.ILineBuffer
@@ -851,7 +854,6 @@ fun NativeCodeEditor(
         }
     }
 
-    // 滚动时动态更新可见行范围，触发按需高亮（大文件无行数硬顶；跨行状态靠状态脊 ensure）
     val syntaxHighlightEnabled = state.performanceMode.enableSyntaxHighlight
     LaunchedEffect(
         contentListState,
@@ -861,34 +863,39 @@ fun NativeCodeEditor(
         state.contentRevision,
     ) {
         if (!syntaxHighlightEnabled) return@LaunchedEffect
-        snapshotFlow {
+
+        fun visibleLogicalRange(): Pair<Int, Int>? {
             val visibleItems = contentListState.layoutInfo.visibleItemsInfo
-            if (visibleItems.isEmpty()) {
-                null
-            } else {
-                val firstVis = visibleItems.first().index
-                val lastVis = visibleItems.last().index
-                val firstLogical = foldViewport.logicalAt(firstVis)
-                val lastLogical = foldViewport.logicalAt(lastVis)
-                val expandedFirst = maxOf(0, firstLogical - 5)
-                val expandedLast = minOf(lines.lastIndex, lastLogical + 5)
-                expandedFirst to expandedLast
-            }
-        }.sample(50).distinctUntilChanged().collectLatest { range ->
-            if (range != null) {
-                val (startLine, endLine) = range
-                highlightCache.updateVisibleRange(startLine, endLine + 1)
-                val currentGen = highlightCache.generation
-                // 同步在本 collect 协程里做：与 ViewModel 高亮任务同属主线程调度串行；
-                // displayEpoch 在 tokenizeVisibleRange 内自增，驱动行级 remember 刷新
-                highlightCache.tokenizeVisibleRange(
-                    startLine = startLine,
-                    endLine = endLine + 1,
-                    lines = lines,
-                    expectedGen = currentGen,
-                )
-                highlightCache.trimInvisibleCache(threshold = 0.8f)
-            }
+            if (visibleItems.isEmpty()) return null
+            val firstLogical = foldViewport.logicalAt(visibleItems.first().index)
+            val lastLogical = foldViewport.logicalAt(visibleItems.last().index)
+            val expandedFirst = maxOf(0, firstLogical - 5)
+            val expandedLast = minOf(lines.lastIndex, lastLogical + 5)
+            return expandedFirst to expandedLast
+        }
+
+        fun paintViewport(range: Pair<Int, Int>) {
+            val (startLine, endLine) = range
+            highlightCache.updateVisibleRange(startLine, endLine + 1)
+            highlightCache.tokenizeVisibleRange(
+                startLine = startLine,
+                endLine = endLine + 1,
+                lines = lines,
+                expectedGen = highlightCache.generation,
+                syncStateBudget = HighlightCache.ViewportSyncStateBudget,
+            )
+            highlightCache.trimInvisibleCache(threshold = 0.8f)
+        }
+
+        val visibleFlow =
+            snapshotFlow { visibleLogicalRange() }
+                .distinctUntilChanged()
+
+        val first = visibleFlow.first { it != null }
+        if (first != null) paintViewport(first)
+
+        visibleFlow.sample(50).collectLatest { range ->
+            if (range != null) paintViewport(range)
         }
     }
 
@@ -2170,8 +2177,6 @@ private fun ReadOnlyLine(
             caretColumn = latestCursorColumn,
         ).first
     }
-    // base 高亮不依赖 selection：拖动选区时未选中行不会重建整行高亮
-    // MINIMAL 模式禁用高亮，改用纯文本显示
     val baseAnnotated =
         remember(highlightVersion, lineIndex, line, theme, enableSyntaxHighlight) {
             if (enableSyntaxHighlight) {
@@ -2180,96 +2185,34 @@ private fun ReadOnlyLine(
                 buildAnnotatedString { append(line) }
             }
         }
-    // 仅当选区覆盖本行时叠加轻量背景，否则直接复用 base（引用相等，不重建）
     val lineSelectionRange = selection?.getSelectedRangeInLine(lineIndex)
-    // 本行内命中的搜索范围：直接用 [SearchMatch.line] 命中当前行，[startCol,endCol) 高亮，
-    // 不再依赖全局偏移减行起始偏移的换算（该换算在单行编辑后因行快照陈旧而错位）。
-    val matchSpans =
+    val lineDecorations =
         remember(
+            lineIndex,
+            line.length,
+            lineSelectionRange,
             searchMatches,
             searchCurrentIndex,
             inlineHighlights,
-            lineIndex,
-            line.length,
-            theme.findBackground,
-            theme.findCurrentBackground,
-        ) {
-            val spans = mutableListOf<Pair<IntRange, Color>>()
-            searchMatches.forEachIndexed { idx, m ->
-                if (m.line == lineIndex) {
-                    val start = m.startCol.coerceIn(0, line.length)
-                    val end = m.endCol.coerceIn(0, line.length)
-                    if (end > start) {
-                        val color =
-                            if (idx == searchCurrentIndex) {
-                                theme.findCurrentBackground
-                            } else {
-                                theme.findBackground
-                            }
-                        spans.add((start until end) to color)
-                    }
-                }
-            }
-            inlineHighlights[lineIndex]?.forEach { r ->
-                val s = r.first.coerceIn(0, line.length)
-                val e = (r.last + 1).coerceIn(0, line.length)
-                if (e > s) spans.add((s until e) to theme.findCurrentBackground)
-            }
-            spans
-        }
-    val annotatedLine =
-        remember(
-            baseAnnotated,
-            lineSelectionRange,
-            theme.selectionBackground,
-            matchSpans,
             diffInlineText,
             diffInlineTextColor,
+            theme,
         ) {
-            buildAnnotatedString {
-                append(baseAnnotated)
-                // 选区背景
-                val range = lineSelectionRange
-                if (range != null) {
-                    // getSelectedRangeInLine 返回闭区间，addStyle 的 end 为开区间，需 +1
-                    val start = range.first.coerceIn(0, line.length)
-                    val end =
-                        if (range.last >= line.length) {
-                            line.length
-                        } else {
-                            range.last + 1
-                        }
-                    if (end > start) {
-                        addStyle(
-                            androidx.compose.ui.text.SpanStyle(
-                                background = theme.selectionBackground,
-                            ),
-                            start,
-                            end,
-                        )
-                    }
-                }
-                // 搜索命中背景（当前命中覆盖其上）
-                for ((r, color) in matchSpans) {
-                    addStyle(
-                        androidx.compose.ui.text.SpanStyle(background = color),
-                        r.first,
-                        r.last,
-                    )
-                }
-                // 文本对比：行内不相同的字符用红色字体，相同字符保持原色
-                diffInlineText[lineIndex]?.forEach { r ->
-                    val s = r.first.coerceIn(0, line.length)
-                    val e = (r.last + 1).coerceIn(0, line.length)
-                    if (e > s) {
-                        addStyle(
-                            androidx.compose.ui.text.SpanStyle(color = diffInlineTextColor),
-                            s,
-                            e,
-                        )
-                    }
-                }
-            }
+            buildLineDecorations(
+                lineIndex = lineIndex,
+                lineLength = line.length,
+                selectionRange = lineSelectionRange,
+                searchMatches = searchMatches,
+                searchCurrentIndex = searchCurrentIndex,
+                inlineHighlights = inlineHighlights,
+                diffInlineText = diffInlineText,
+                theme = theme,
+                diffInlineTextColor = diffInlineTextColor,
+            )
+        }
+    val annotatedLine =
+        remember(baseAnnotated, lineDecorations) {
+            applyLineDecorations(baseAnnotated, lineDecorations)
         }
 
     // 超长行虚拟化：仅渲染可见窗口子串，避免 Text 一次性 layout 十几万字符卡死。

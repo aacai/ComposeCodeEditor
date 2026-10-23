@@ -34,6 +34,7 @@ import zhiqiu.codeeditor.text.EnterIndent
 import zhiqiu.codeeditor.text.Indent
 import zhiqiu.codeeditor.text.LexicalError
 import zhiqiu.codeeditor.text.LineSeparator
+import zhiqiu.codeeditor.highlight.BackgroundLexWorker
 import zhiqiu.codeeditor.highlight.HighlightCache
 import zhiqiu.codeeditor.buffer.ILineBuffer
 import zhiqiu.codeeditor.buffer.LargeFileStrategy
@@ -41,9 +42,11 @@ import zhiqiu.codeeditor.buffer.LineBuffer
 import zhiqiu.codeeditor.buffer.PerformanceMode
 import zhiqiu.codeeditor.text.SelectionRange
 import zhiqiu.codeeditor.highlight.SyntaxHighlighter
+import zhiqiu.codeeditor.highlight.SyntaxHighlighterRegistry
 import zhiqiu.codeeditor.text.UndoManager
 import zhiqiu.codeeditor.text.WordBoundary
-import zhiqiu.codeeditor.highlight.createSyntaxHighlighter
+
+private const val OPENING_VIEWPORT_LINES = 48
 
 // 光标镜像去抖窗口（ms）：热路径连续移动光标时合并为最后一次同步进 StateFlow
 private const val CURSOR_MIRROR_SYNC_DELAY_MS = 100L
@@ -99,7 +102,7 @@ class NativeEditorViewModel(
     private var selectionGestureAnchor: Pair<Int, Int>? = null
 
     private var highlighter: SyntaxHighlighter =
-        createSyntaxHighlighter(EditorLanguage.PlainText)
+        SyntaxHighlighterRegistry.resolve(EditorLanguage.PlainText)
     var highlightCache: HighlightCache = HighlightCache(highlighter)
 
     // 后台渐进高亮任务（可见行优先），任何新的全量重建都会先取消它
@@ -672,9 +675,7 @@ class NativeEditorViewModel(
 
     private fun handleLanguageChanged(language: EditorLanguage) {
         highlightJob?.cancel()
-        highlighter = createSyntaxHighlighter(language)
-        // 切换语言不再在主线程同步全量 tokenize（大文件会 ANR）。
-        // 改为占位 + 后台分块渐进上色，主线程立即返回，避免界面卡死。
+        highlighter = SyntaxHighlighterRegistry.resolve(language)
         highlightCache.setHighlighter(highlighter)
         val lines = _state.value.content.getLines()
         highlightCache.prefill(lines)
@@ -1329,9 +1330,7 @@ class NativeEditorViewModel(
     ) {
         val lineCount = newContent.lineCount
         val performanceMode = LargeFileStrategy.getPerformanceMode(fileSize, lineCount)
-        // 高亮器就位后先占位，立即显示文本（无高亮），再后台渐进上色 / 预热状态脊，
-        // 避免大文件一次性 tokenize 阻塞首屏；视口滚动会惰性补 token（无行数硬顶）
-        highlighter = createSyntaxHighlighter(language)
+        highlighter = SyntaxHighlighterRegistry.resolve(language)
         highlightCache = HighlightCache(highlighter, lineCount)
         val lines = newContent.getLines()
         highlightCache.prefill(lines)
@@ -1358,9 +1357,32 @@ class NativeEditorViewModel(
                 collapsedFolds = session?.collapsedFoldStarts ?: emptySet(),
             )
         undoManager.clear()
+        highlightViewportNow(
+            startLine = maxOf(0, target.line - 5),
+            endLineExclusive = minOf(lines.size, target.line + OPENING_VIEWPORT_LINES),
+            lines = lines,
+        )
         startIncrementalHighlight(lines)
-        // 折叠起点随后与重新探测出的区间取交集，内容变了收在别处的折叠会自己掉
         refreshFolds(lines)
+    }
+
+    fun highlightViewportNow(
+        startLine: Int,
+        endLineExclusive: Int,
+        lines: List<String>? = null,
+    ) {
+        if (!_state.value.performanceMode.enableSyntaxHighlight) return
+        val doc = lines ?: _state.value.content.getLines()
+        if (doc.isEmpty()) return
+        val start = startLine.coerceIn(0, doc.lastIndex)
+        val end = endLineExclusive.coerceIn(start, doc.size)
+        highlightCache.tokenizeVisibleRange(
+            startLine = start,
+            endLine = end,
+            lines = doc,
+            expectedGen = highlightCache.generation,
+            syncStateBudget = HighlightCache.ViewportSyncStateBudget,
+        )
     }
 
     /** 会话坐标落到新文档上的有效落点。 */
@@ -2011,18 +2033,6 @@ class NativeEditorViewModel(
         syncCursorFromState()
     }
 
-    /**
-     * 分块渐进高亮 / 状态预热：把工作拆成小块，每块之间 yield() 让出主线程，
-     * 避免大文件一次性 tokenize 阻塞首屏（切换语言 / 加载大文件的 ANR 根因）。
-     *
-     * - [PerformanceMode.eagerFullHighlight]=true（FULL）：写入 token + 状态，适合小文件
-     * - 否则：只 [HighlightCache.warmStates] 推进状态脊，token 由视口 [tokenizeVisibleRange] 惰性生成
-     *   （对齐 VS Code：大文件滚到底仍有正确跨行高亮，且无行数硬顶）
-     *
-     * 关键：本任务运行在 viewModelScope 默认的主线程调度器上（而非后台线程）。
-     * HighlightCache 的 token/状态会被主线程的渲染、输入以及本任务同时访问；
-     * 放在后台线程会与主线程并发改同一结构 → 崩溃。单线程 + 分块 yield 消除数据竞争。
-     */
     private fun startIncrementalHighlight(lines: List<String>) {
         val previous = highlightJob
         highlightJob =
@@ -2033,23 +2043,44 @@ class NativeEditorViewModel(
                     val mode = _state.value.performanceMode
                     if (!mode.enableSyntaxHighlight || lines.isEmpty()) return@launch
                     val expectedGen = highlightCache.generation
-                    val total = lines.size
-                    var from = 0
-                    // 单线程分块：块偏小以缩短每次占用主线程的时长，靠帧间 yield 累进
-                    val chunk = if (mode.eagerFullHighlight) 600 else 1200
+                    val snapshot = ArrayList(lines)
+                    val lex = highlighter
+                    val total = snapshot.size
+                    var from = highlightCache.getStateReadyUpTo().coerceIn(0, total)
+                    var viewportCaughtUp = false
                     while (from < total) {
                         if (!isActive) break
-                        val to = (from + chunk).coerceAtMost(total)
-                        val result =
-                            if (mode.eagerFullHighlight) {
-                                highlightCache.tokenizeRange(from, to, lines, expectedGen)
+                        val (visStart, visEnd) = highlightCache.getVisibleRange()
+                        if (visEnd > from && highlightCache.hasHeuristicIn(visStart, visEnd)) {
+                            viewportCaughtUp = false
+                        }
+                        val priorityEnd =
+                            if (!viewportCaughtUp && visEnd > from) {
+                                visEnd.coerceIn(from + 1, total)
                             } else {
-                                highlightCache.warmStates(to, lines, expectedGen)
+                                total
                             }
-                        if (result == null) break
-                        from = to
-                        // FULL：token 变了要升 highlightVersion；状态预热不升版，
-                        // 视口 tokenize 靠 HighlightCache.displayEpoch 驱动重绘
+                        val prev = highlightCache.prevStateFor(from)
+                        val slice =
+                            withContext(defaultDispatcher) {
+                                BackgroundLexWorker.warmSlice(
+                                    highlighter = lex,
+                                    lines = snapshot,
+                                    fromIndex = from,
+                                    toExclusive = priorityEnd,
+                                    prevState = prev,
+                                    deadline = BackgroundLexWorker.markNowPlus(HighlightCache.BackgroundSliceBudget),
+                                    retainTokens = mode.eagerFullHighlight,
+                                )
+                            }
+                        if (highlightCache.generation != expectedGen) break
+                        val progressed = highlightCache.applyLexSlice(slice, expectedGen)
+                        if (progressed == null || progressed <= from) break
+                        from = progressed
+                        if (!viewportCaughtUp && from >= highlightCache.getVisibleRange().second) {
+                            viewportCaughtUp = true
+                            highlightCache.revalidateVisibleExact(snapshot, expectedGen)
+                        }
                         if (mode.eagerFullHighlight) {
                             _state.value =
                                 _state.value.copy(
@@ -2058,10 +2089,12 @@ class NativeEditorViewModel(
                         }
                         yield()
                     }
+                    if (highlightCache.getStateReadyUpTo() >= total) {
+                        highlightCache.revalidateVisibleExact(snapshot, expectedGen)
+                    }
                 } catch (c: CancellationException) {
                     throw c
                 } catch (t: Throwable) {
-                    // 后台高亮异常不影响文本可用性：降级为无高亮，并上报错误供定位
                     reportError("IncrementalHighlight", t)
                 }
             }

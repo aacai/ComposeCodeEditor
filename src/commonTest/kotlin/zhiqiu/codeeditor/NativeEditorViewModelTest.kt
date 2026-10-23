@@ -1784,10 +1784,33 @@ class NativeEditorViewModelTest {
             // 视口跳到旧硬顶之外：仍应高亮（无行数上限）
             val gen = viewModel.highlightCache.generation
             val lines = viewModel.state.value.content.getLines()
-            viewModel.highlightCache.tokenizeVisibleRange(11_000, 11_020, lines, gen)
+            viewModel.highlightCache.tokenizeVisibleRange(
+                11_000,
+                11_020,
+                lines,
+                gen,
+                syncStateBudget = null,
+            )
             assertTrue(
                 viewModel.highlightCache.getTokens(11_000).isNotEmpty(),
                 "滚过原 5000 行硬顶后视口仍应有高亮",
+            )
+        }
+
+    @Test
+    fun loadContentSynchronouslyHighlightsOpeningViewport() =
+        runTest {
+            // PERFORMANCE：后台不写全文 token，但装载时应对光标附近同步上色
+            viewModel.loadContent(kotlinLines(12_000), "big.kt", EditorLanguage.Kotlin)
+            advanceUntilIdle()
+            assertEquals(PerformanceMode.PERFORMANCE, viewModel.state.value.performanceMode)
+            assertTrue(
+                viewModel.highlightCache.getTokens(0).isNotEmpty(),
+                "打开后首屏应同步高亮",
+            )
+            assertTrue(
+                viewModel.highlightCache.getTokens(2_000).isEmpty(),
+                "首屏窗口之外仍应由视口惰性补色，后台不写 token",
             )
         }
 
@@ -1808,7 +1831,13 @@ class NativeEditorViewModelTest {
             )
             val gen = viewModel.highlightCache.generation
             val lines = viewModel.state.value.content.getLines()
-            viewModel.highlightCache.tokenizeVisibleRange(49_900, 49_920, lines, gen)
+            viewModel.highlightCache.tokenizeVisibleRange(
+                49_900,
+                49_920,
+                lines,
+                gen,
+                syncStateBudget = null,
+            )
             assertTrue(viewModel.highlightCache.getTokens(49_900).isNotEmpty())
         }
 
