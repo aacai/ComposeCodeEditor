@@ -479,7 +479,7 @@ class NativeEditorViewModel(
     }
 
     /**
-     * 整块同步推送：单次 splice + 单次 [highlightCache.rebuild]（NFR-001），
+     * 整块同步推送：单次 splice + [EditDelta] 局部高亮（NFR-001），
      * 压入一个 [EditOp.Block]（仅存块内行，FR-007/NFR-002）。
      */
     private fun handleSyncBlock(e: NativeEditorEvent.SyncBlock) {
@@ -496,7 +496,10 @@ class NativeEditorViewModel(
             }
         val newLines = applyBlockSplice(lines, e.targetStart, e.replaceCount, e.newLines)
         val newContent = LineBuffer(newLines.joinToString("\n"))
-        highlightCache.rebuild(newLines)
+        refreshHighlightAfterEdit(
+            EditDelta.replaceLines(e.targetStart, e.replaceCount, e.newLines.size),
+            newLines,
+        )
         undoManager.push(EditOp.Block(oldSlice, e.newLines, e.targetStart, e.replaceCount))
         _state.value =
             currentState.copy(
@@ -508,6 +511,17 @@ class NativeEditorViewModel(
                 canRedo = undoManager.canRedo,
             )
         scheduleFoldRefresh()
+    }
+
+    /** 局部失效高亮；脊未推满时重启后台 warm。 */
+    private fun refreshHighlightAfterEdit(
+        delta: EditDelta,
+        lines: List<String>,
+    ) {
+        highlightCache.applyDelta(delta, lines)
+        if (highlightCache.getStateReadyUpTo() < lines.size) {
+            startIncrementalHighlight(lines)
+        }
     }
 
     private fun handleLineContentChanged(
@@ -541,7 +555,7 @@ class NativeEditorViewModel(
         if (oldText == finalText) return
         currentState.content.setLine(lineIndex, finalText)
         val lines = currentState.content.getLines()
-        highlightCache.updateLine(lineIndex, lines)
+        refreshHighlightAfterEdit(EditDelta.singleLine(lineIndex), lines)
         // 行级增量：仅记录被替换的那一行，避免每次按键存储整份文件（大文件 OOM 闪退根因）
         undoManager.push(EditOp.Single(lineIndex, oldText, finalText, replaceStart))
         var next =
@@ -649,7 +663,7 @@ class NativeEditorViewModel(
             currentState.content.insertLine(line + 1 + offset, text)
         }
         val newLines = currentState.content.getLines()
-        highlightCache.applyDelta(
+        refreshHighlightAfterEdit(
             EditDelta.replaceLines(
                 startLine = line,
                 oldLineCount = 1,
@@ -951,7 +965,8 @@ class NativeEditorViewModel(
         if (newText == oldText) return
         val removed = oldText.length - newText.length
         currentState.content.setLine(line, newText)
-        highlightCache.updateLine(line, currentState.content.getLines())
+        val lines = currentState.content.getLines()
+        refreshHighlightAfterEdit(EditDelta.singleLine(line), lines)
         undoManager.push(EditOp.Single(line, oldText, newText, cursor.column))
         val newColumn = (cursor.column - removed).coerceAtLeast(0)
         syncCursorNow(line, newColumn)
@@ -1006,7 +1021,7 @@ class NativeEditorViewModel(
                 }
                 currentState.content.setLine(op.lineIndex, op.oldText)
                 val lines = currentState.content.getLines()
-                highlightCache.rebuild(lines)
+                refreshHighlightAfterEdit(EditDelta.singleLine(op.lineIndex), lines)
                 _state.value =
                     currentState.copy(
                         isModified = isContentModified(currentState),
@@ -1037,7 +1052,10 @@ class NativeEditorViewModel(
                     currentState.content.deleteLine(op.lineIndex + 1)
                 }
                 val lines = currentState.content.getLines()
-                highlightCache.rebuild(lines)
+                refreshHighlightAfterEdit(
+                    EditDelta.replaceLines(op.lineIndex, 1 + op.newLines.size, 1),
+                    lines,
+                )
                 _state.value =
                     currentState.copy(
                         isModified = isContentModified(currentState),
@@ -1088,7 +1106,10 @@ class NativeEditorViewModel(
                 val lines = currentState.content.getLines()
                 val restored = applyBlockSplice(lines, op.targetStart, op.newLines.size, op.oldLines)
                 val newContent = LineBuffer(restored.joinToString("\n"))
-                highlightCache.rebuild(restored)
+                refreshHighlightAfterEdit(
+                    EditDelta.replaceLines(op.targetStart, op.newLines.size, op.oldLines.size),
+                    restored,
+                )
                 _state.value =
                     currentState.copy(
                         content = newContent,
@@ -1115,7 +1136,7 @@ class NativeEditorViewModel(
                 }
                 currentState.content.setLine(op.lineIndex, op.newText)
                 val lines = currentState.content.getLines()
-                highlightCache.rebuild(lines)
+                refreshHighlightAfterEdit(EditDelta.singleLine(op.lineIndex), lines)
                 _state.value =
                     currentState.copy(
                         isModified = true,
@@ -1141,7 +1162,10 @@ class NativeEditorViewModel(
                     currentState.content.insertLine(op.lineIndex + 1 + offset, text)
                 }
                 val lines = currentState.content.getLines()
-                highlightCache.rebuild(lines)
+                refreshHighlightAfterEdit(
+                    EditDelta.replaceLines(op.lineIndex, 1, 1 + op.newLines.size),
+                    lines,
+                )
                 val cursorLine = op.lineIndex + op.cursorLineOffset
                 _state.value =
                     currentState.copy(
@@ -1192,7 +1216,10 @@ class NativeEditorViewModel(
                 val lines = currentState.content.getLines()
                 val applied = applyBlockSplice(lines, op.targetStart, op.replaceCount, op.newLines)
                 val newContent = LineBuffer(applied.joinToString("\n"))
-                highlightCache.rebuild(applied)
+                refreshHighlightAfterEdit(
+                    EditDelta.replaceLines(op.targetStart, op.replaceCount, op.newLines.size),
+                    applied,
+                )
                 _state.value =
                     currentState.copy(
                         content = newContent,
@@ -1983,11 +2010,14 @@ class NativeEditorViewModel(
         }
         replaced.addAll(lines.subList(endLine + 1, lines.size))
 
-        val oldText = currentState.content.getText()
-        val newText = replaced.joinToString("\n")
-        val newContent = LineBuffer(newText)
-        highlightCache.rebuild(newContent.getLines())
-        undoManager.push(EditOp.ReplaceAll(oldText, newText))
+        val oldSlice = lines.subList(startLine, endLine + 1).toList()
+        val newSlice = replaced.subList(startLine, startLine + insertLines.size).toList()
+        val newContent = LineBuffer(replaced.joinToString("\n"))
+        refreshHighlightAfterEdit(
+            EditDelta.replaceLines(startLine, oldSlice.size, newSlice.size),
+            replaced,
+        )
+        undoManager.push(EditOp.Block(oldSlice, newSlice, startLine, oldSlice.size))
         selectionGestureAnchor = null
         _state.value =
             currentState.copy(
@@ -2006,7 +2036,7 @@ class NativeEditorViewModel(
 
     /**
      * 盒选区写入：把 [box] 的列窗口在每一行都替换成 [replacement]（剪切/删除时为空串）。
-     * 与 [applyReplacement] 同一条链路：整篇一次替换、撤销栈一条记录、高亮一次重建。
+     * 与 [applyReplacement] 同一条链路：块级撤销 + EditDelta 局部高亮。
      */
     private fun applyColumnarReplacement(
         replacement: String,
@@ -2017,16 +2047,20 @@ class NativeEditorViewModel(
         val lastRow = minOf(box.endLine, lines.lastIndex)
         val firstRow = minOf(box.startLine, lastRow)
         val replaced = lines.toMutableList()
+        val oldSlice = lines.subList(firstRow, lastRow + 1).toList()
         for (row in firstRow..lastRow) {
             val text = replaced[row]
             val left = text.substring(0, minOf(box.startCol, text.length))
             val right = text.substring(minOf(box.endCol, text.length))
             replaced[row] = left + replacement + right
         }
-        val newText = replaced.joinToString("\n")
-        val newContent = LineBuffer(newText)
-        highlightCache.rebuild(newContent.getLines())
-        undoManager.push(EditOp.ReplaceAll(lines.joinToString("\n"), newText))
+        val newSlice = replaced.subList(firstRow, lastRow + 1).toList()
+        val newContent = LineBuffer(replaced.joinToString("\n"))
+        refreshHighlightAfterEdit(
+            EditDelta.replaceLines(firstRow, oldSlice.size, newSlice.size),
+            replaced,
+        )
+        undoManager.push(EditOp.Block(oldSlice, newSlice, firstRow, oldSlice.size))
         selectionGestureAnchor = null
         val caretLine = cursor.line.coerceIn(firstRow, lastRow)
         val currentState = _state.value

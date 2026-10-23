@@ -173,6 +173,11 @@ class HighlightCache(
         maxPropagate: Int = EditDelta.DEFAULT_PROPAGATE,
     ) {
         if (delta.startLine > lines.size) return
+        // 超大块改脊 O(n) 搬移仍贵，直接全量重建更稳
+        if (delta.oldLineCount + delta.newLineCount > 8_000) {
+            rebuild(lines)
+            return
+        }
         val expectedOld = lines.size - delta.lineDelta
         when {
             sortedLineTokens.isEmpty() -> syncToList(lines.size)
@@ -261,15 +266,21 @@ class HighlightCache(
         val start = delta.startLine.coerceAtLeast(0)
         val oldEnd = start + delta.oldLineCount
         val lineDelta = delta.lineDelta
-        repeat(delta.oldLineCount) {
-            if (start < sortedLineTokens.size) sortedLineTokens.removeAt(start)
-            if (start < lineStates.size) lineStates.removeAt(start)
+        // 超大块改脊成本高，交给调用方 rebuild；此处仍做安全 bulk 删除
+        if (delta.oldLineCount > 0 && start < sortedLineTokens.size) {
+            val tokenEnd = minOf(oldEnd, sortedLineTokens.size)
+            sortedLineTokens.subList(start, tokenEnd).clear()
+            if (start < lineStates.size) {
+                lineStates.subList(start, minOf(oldEnd, lineStates.size)).clear()
+            }
         }
         rekeyLineMaps(start, oldEnd, lineDelta)
-        for (a in 0 until delta.newLineCount) {
-            val at = (start + a).coerceAtMost(sortedLineTokens.size)
-            sortedLineTokens.add(at, emptyList())
-            lineStates.add(at.coerceAtMost(lineStates.size), null)
+        if (delta.newLineCount > 0) {
+            val insertTokens = List(delta.newLineCount) { emptyList<Token>() }
+            val insertStates = List(delta.newLineCount) { null as HighlightState? }
+            val at = start.coerceAtMost(sortedLineTokens.size)
+            sortedLineTokens.addAll(at, insertTokens)
+            lineStates.addAll(at.coerceAtMost(lineStates.size), insertStates)
         }
         when {
             visibleStart >= oldEnd -> visibleStart = (visibleStart + lineDelta).coerceAtLeast(0)
