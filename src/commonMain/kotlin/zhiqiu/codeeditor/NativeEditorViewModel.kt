@@ -40,6 +40,7 @@ import zhiqiu.codeeditor.highlight.HighlightCache
 import zhiqiu.codeeditor.buffer.ILineBuffer
 import zhiqiu.codeeditor.buffer.LargeFileStrategy
 import zhiqiu.codeeditor.buffer.LineBuffer
+import zhiqiu.codeeditor.buffer.LineBufferFactory
 import zhiqiu.codeeditor.buffer.PerformanceMode
 import zhiqiu.codeeditor.render.RenderPlan
 import zhiqiu.codeeditor.text.SelectionRange
@@ -49,6 +50,9 @@ import zhiqiu.codeeditor.text.UndoManager
 import zhiqiu.codeeditor.text.WordBoundary
 
 private const val OPENING_VIEWPORT_LINES = 48
+
+/** 查找命中上限，避免超大文件一次分配上万条拖垮 UI。 */
+private const val MAX_SEARCH_MATCHES = 5_000
 
 // 光标镜像去抖窗口（ms）：热路径连续移动光标时合并为最后一次同步进 StateFlow
 private const val CURSOR_MIRROR_SYNC_DELAY_MS = 100L
@@ -448,7 +452,7 @@ class NativeEditorViewModel(
         val currentState = _state.value
         val oldText = currentState.content.getText()
         if (oldText == newText) return
-        val newContent = LineBuffer(newText)
+        val newContent = LineBufferFactory.create(newText)
         highlightCache.rebuild(newContent.getLines())
         undoManager.push(EditOp.ReplaceAll(oldText, newText))
         _state.value =
@@ -478,6 +482,37 @@ class NativeEditorViewModel(
         return out
     }
 
+    /** 原地块替换，避免粘贴/撤销时整篇拷贝成新缓冲。 */
+    private fun spliceLinesInPlace(
+        content: ILineBuffer,
+        start: Int,
+        replaceCount: Int,
+        inserted: List<String>,
+    ) {
+        val s = start.coerceIn(0, content.lineCount)
+        val remove = replaceCount.coerceIn(0, content.lineCount - s)
+        when {
+            remove == 0 && inserted.isEmpty() -> return
+            remove == 0 -> {
+                inserted.forEachIndexed { i, line -> content.insertLine(s + i, line) }
+            }
+            inserted.isEmpty() -> {
+                repeat(remove) { content.deleteLine(s) }
+            }
+            remove == inserted.size -> {
+                for (i in inserted.indices) content.setLine(s + i, inserted[i])
+            }
+            remove < inserted.size -> {
+                for (i in 0 until remove) content.setLine(s + i, inserted[i])
+                for (i in remove until inserted.size) content.insertLine(s + i, inserted[i])
+            }
+            else -> {
+                for (i in inserted.indices) content.setLine(s + i, inserted[i])
+                repeat(remove - inserted.size) { content.deleteLine(s + inserted.size) }
+            }
+        }
+    }
+
     /**
      * 整块同步推送：单次 splice + [EditDelta] 局部高亮（NFR-001），
      * 压入一个 [EditOp.Block]（仅存块内行，FR-007/NFR-002）。
@@ -494,8 +529,8 @@ class NativeEditorViewModel(
             } else {
                 emptyList()
             }
-        val newLines = applyBlockSplice(lines, e.targetStart, e.replaceCount, e.newLines)
-        val newContent = LineBuffer(newLines.joinToString("\n"))
+        spliceLinesInPlace(currentState.content, e.targetStart, e.replaceCount, e.newLines)
+        val newLines = currentState.content.getLines()
         refreshHighlightAfterEdit(
             EditDelta.replaceLines(e.targetStart, e.replaceCount, e.newLines.size),
             newLines,
@@ -503,8 +538,7 @@ class NativeEditorViewModel(
         undoManager.push(EditOp.Block(oldSlice, e.newLines, e.targetStart, e.replaceCount))
         _state.value =
             currentState.copy(
-                content = newContent,
-                isModified = isModifiedAgainst(newContent.getText(), currentState),
+                isModified = isModifiedAgainst(currentState.content.getText(), currentState),
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
                 canUndo = undoManager.canUndo,
@@ -768,20 +802,25 @@ class NativeEditorViewModel(
         regex: Boolean,
     ): List<SearchMatch> {
         if (query.isEmpty()) return emptyList()
-        // 与渲染端同源的最新分行，保证 line/col 与编辑器实际显示行一致
-        val lines = _state.value.content.getLines()
+        // 仅用文本快照算行起点，避免后台线程读正在编辑的 LineBuffer
+        val lineStarts = buildLineStarts(text)
         if (regex) {
             val pattern =
                 runCatching {
                     Regex(query, if (caseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE))
                 }.getOrNull() ?: return emptyList()
-            return pattern.findAll(text).mapNotNull { rangeToMatch(it.range, lines) }.toList()
+            val matches = ArrayList<SearchMatch>(256)
+            for (m in pattern.findAll(text)) {
+                rangeToMatch(m.range, text, lineStarts)?.let { matches.add(it) }
+                if (matches.size >= MAX_SEARCH_MATCHES) break
+            }
+            return matches
         }
         val q = if (caseSensitive) query else query.lowercase()
         val t = if (caseSensitive) text else text.lowercase()
-        val matches = mutableListOf<SearchMatch>()
+        val matches = ArrayList<SearchMatch>(256)
         var startIndex = 0
-        while (true) {
+        while (matches.size < MAX_SEARCH_MATCHES) {
             val index = t.indexOf(q, startIndex)
             if (index == -1) break
             val end = index + query.length
@@ -789,24 +828,42 @@ class NativeEditorViewModel(
                 startIndex = index + 1
                 continue
             }
-            rangeToMatch(index until end, lines)?.let { matches.add(it) }
+            rangeToMatch(index until end, text, lineStarts)?.let { matches.add(it) }
             startIndex = index + 1
         }
         return matches
     }
 
+    private fun buildLineStarts(text: String): IntArray {
+        val starts = ArrayList<Int>(text.length / 32 + 2)
+        starts.add(0)
+        for (i in text.indices) {
+            if (text[i] == '\n') starts.add(i + 1)
+        }
+        return starts.toIntArray()
+    }
+
     /** 将全局字符偏移（命中区间）转换为 [SearchMatch]（行号 + 行内列区间）。 */
-    private fun rangeToMatch(range: IntRange, lines: List<String>): SearchMatch? {
-        val start = lineColForOffset(range.first, lines) ?: return null
-        val end = lineColForOffset(range.last, lines) ?: return null
+    private fun rangeToMatch(
+        range: IntRange,
+        text: String,
+        lineStarts: IntArray,
+    ): SearchMatch? {
+        val start = lineColForOffset(range.first, lineStarts) ?: return null
+        val end = lineColForOffset(range.last, lineStarts) ?: return null
         val startCol = start.second
         val endCol =
             if (end.first == start.first) {
-                // 单行命中：end 为命中最后一个字符，列区间需 +1 变开区间
                 end.second + 1
             } else {
-                // 跨多行：仅高亮起始行（与旧实现单行行为一致），延伸到行尾
-                lines.getOrNull(start.first)?.length ?: 0
+                val lineStart = lineStarts[start.first]
+                val lineEnd =
+                    if (start.first + 1 < lineStarts.size) {
+                        lineStarts[start.first + 1] - 1
+                    } else {
+                        text.length
+                    }
+                (lineEnd - lineStart).coerceAtLeast(0)
             }
         return SearchMatch(start.first, startCol, endCol.coerceAtLeast(startCol))
     }
@@ -820,16 +877,26 @@ class NativeEditorViewModel(
         return start until endExclusive
     }
 
-    /** 把全文字符偏移换算成 (行, 列)。 */
-    private fun lineColForOffset(offset: Int, lines: List<String>): Pair<Int, Int>? {
-        if (offset < 0) return null
-        var acc = 0
-        for ((i, line) in lines.withIndex()) {
-            val len = line.length
-            if (offset <= acc + len) return i to (offset - acc).coerceAtLeast(0)
-            acc += len + 1
+    /** 把全文字符偏移换算成 (行, 列)；[lineStarts] 为各行起始偏移。 */
+    private fun lineColForOffset(
+        offset: Int,
+        lineStarts: IntArray,
+    ): Pair<Int, Int>? {
+        if (offset < 0 || lineStarts.isEmpty()) return null
+        var lo = 0
+        var hi = lineStarts.lastIndex
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            val start = lineStarts[mid]
+            val next = if (mid + 1 < lineStarts.size) lineStarts[mid + 1] else Int.MAX_VALUE
+            when {
+                offset < start -> hi = mid - 1
+                offset >= next -> lo = mid + 1
+                else -> return mid to (offset - start)
+            }
         }
-        return null
+        val last = lineStarts.lastIndex
+        return last to (offset - lineStarts[last]).coerceAtLeast(0)
     }
 
     /** 判断 [start, end) 是否处于单词边界（用于全词匹配）。 */
@@ -1073,7 +1140,7 @@ class NativeEditorViewModel(
             }
 
             is EditOp.ReplaceAll -> {
-                val newContent = LineBuffer(op.oldText)
+                val newContent = LineBufferFactory.create(op.oldText)
                 val lines = newContent.getLines()
                 highlightCache.rebuild(lines)
                 val lastLine = lines.lastIndex.coerceAtLeast(0)
@@ -1103,17 +1170,20 @@ class NativeEditorViewModel(
                     undoManager.cancelUndo(op)
                     return
                 }
-                val lines = currentState.content.getLines()
-                val restored = applyBlockSplice(lines, op.targetStart, op.newLines.size, op.oldLines)
-                val newContent = LineBuffer(restored.joinToString("\n"))
+                spliceLinesInPlace(
+                    currentState.content,
+                    op.targetStart,
+                    op.newLines.size,
+                    op.oldLines,
+                )
+                val restored = currentState.content.getLines()
                 refreshHighlightAfterEdit(
                     EditDelta.replaceLines(op.targetStart, op.newLines.size, op.oldLines.size),
                     restored,
                 )
                 _state.value =
                     currentState.copy(
-                        content = newContent,
-                        isModified = isModifiedAgainst(newContent.getText(), currentState),
+                        isModified = isModifiedAgainst(currentState.content.getText(), currentState),
                         highlightVersion = currentState.highlightVersion + 1,
                         contentRevision = currentState.contentRevision + 1,
                         canUndo = undoManager.canUndo,
@@ -1184,7 +1254,7 @@ class NativeEditorViewModel(
             }
 
             is EditOp.ReplaceAll -> {
-                val newContent = LineBuffer(op.newText)
+                val newContent = LineBufferFactory.create(op.newText)
                 val lines = newContent.getLines()
                 highlightCache.rebuild(lines)
                 val lastLine = lines.lastIndex.coerceAtLeast(0)
@@ -1213,17 +1283,20 @@ class NativeEditorViewModel(
                     undoManager.cancelRedo(op)
                     return
                 }
-                val lines = currentState.content.getLines()
-                val applied = applyBlockSplice(lines, op.targetStart, op.replaceCount, op.newLines)
-                val newContent = LineBuffer(applied.joinToString("\n"))
+                spliceLinesInPlace(
+                    currentState.content,
+                    op.targetStart,
+                    op.replaceCount,
+                    op.newLines,
+                )
+                val applied = currentState.content.getLines()
                 refreshHighlightAfterEdit(
                     EditDelta.replaceLines(op.targetStart, op.replaceCount, op.newLines.size),
                     applied,
                 )
                 _state.value =
                     currentState.copy(
-                        content = newContent,
-                        isModified = isModifiedAgainst(newContent.getText(), currentState),
+                        isModified = isModifiedAgainst(currentState.content.getText(), currentState),
                         highlightVersion = currentState.highlightVersion + 1,
                         contentRevision = currentState.contentRevision + 1,
                         canUndo = undoManager.canUndo,
@@ -1322,7 +1395,7 @@ class NativeEditorViewModel(
                     val raw = fileSystem.source(path.toPath()).buffer().use { it.readUtf8() }
                     separator = LineSeparator.detect(raw)
                     text = LineSeparator.normalize(raw)
-                    newContent = LineBuffer(text)
+                    newContent = LineBufferFactory.create(text)
                     fileSize = size
                     lineCount = newContent.lineCount
                 }
@@ -2012,16 +2085,15 @@ class NativeEditorViewModel(
 
         val oldSlice = lines.subList(startLine, endLine + 1).toList()
         val newSlice = replaced.subList(startLine, startLine + insertLines.size).toList()
-        val newContent = LineBuffer(replaced.joinToString("\n"))
+        spliceLinesInPlace(currentState.content, startLine, oldSlice.size, newSlice)
         refreshHighlightAfterEdit(
             EditDelta.replaceLines(startLine, oldSlice.size, newSlice.size),
-            replaced,
+            currentState.content.getLines(),
         )
         undoManager.push(EditOp.Block(oldSlice, newSlice, startLine, oldSlice.size))
         selectionGestureAnchor = null
         _state.value =
             currentState.copy(
-                content = newContent,
                 cursorLine = cursorLine,
                 cursorColumn = cursorColumn,
                 isModified = true,
@@ -2055,20 +2127,20 @@ class NativeEditorViewModel(
             replaced[row] = left + replacement + right
         }
         val newSlice = replaced.subList(firstRow, lastRow + 1).toList()
-        val newContent = LineBuffer(replaced.joinToString("\n"))
+        val currentState = _state.value
+        spliceLinesInPlace(currentState.content, firstRow, oldSlice.size, newSlice)
         refreshHighlightAfterEdit(
             EditDelta.replaceLines(firstRow, oldSlice.size, newSlice.size),
-            replaced,
+            currentState.content.getLines(),
         )
         undoManager.push(EditOp.Block(oldSlice, newSlice, firstRow, oldSlice.size))
         selectionGestureAnchor = null
         val caretLine = cursor.line.coerceIn(firstRow, lastRow)
-        val currentState = _state.value
+        val caretLen = currentState.content.getLine(caretLine).length
         _state.value =
             currentState.copy(
-                content = newContent,
                 cursorLine = caretLine,
-                cursorColumn = minOf(box.startCol + replacement.length, replaced[caretLine].length),
+                cursorColumn = minOf(box.startCol + replacement.length, caretLen),
                 isModified = true,
                 selection = null,
                 highlightVersion = currentState.highlightVersion + 1,
@@ -2165,7 +2237,7 @@ class NativeEditorViewModel(
                 val separator = LineSeparator.detect(text)
                 val lfText = LineSeparator.normalize(text)
                 installDocument(
-                    newContent = LineBuffer(lfText),
+                    newContent = LineBufferFactory.create(lfText),
                     filePath = "",
                     fileName = fileName,
                     language = language,
@@ -2213,7 +2285,7 @@ class NativeEditorViewModel(
                 val originalSeparator = LineSeparator.detect(diskText)
                 val language = session?.language ?: EditorLanguage.fromExtension(filePath.substringAfterLast('.', ""))
                 installDocument(
-                    newContent = LineBuffer(lfDraft),
+                    newContent = LineBufferFactory.create(lfDraft),
                     filePath = filePath,
                     fileName = session?.fileName?.takeIf { it.isNotBlank() }
                         ?: filePath.substringAfterLast('/').substringAfterLast('\\'),
