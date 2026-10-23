@@ -8,21 +8,15 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 import zhiqiu.codeeditor.render.EditorTheme
 import zhiqiu.codeeditor.render.tokenToColor
 import zhiqiu.codeeditor.text.LexicalError
 
-/**
- * 行级高亮缓存（视口优先，对齐 VS Code / Monaco 思路）。
- *
- * **状态脊**：从第 0 行起连续维护每行结束时的 [HighlightState]（[stateReadyUpTo]）。
- * 快速滚到文件底部时，先把状态推到视口前一行，再 tokenize 可见行——跨行注释/字符串才正确。
- *
- * **Token LRU**：只保留视口附近的 token；大文件不必为全文常驻 token 列表。
- * 后台可走 [warmStates] 只推状态不存 token，或 [tokenizeRange] 全文落 token（FULL 模式）。
- *
- * [displayEpoch]：视口/编辑改写 token 后自增，Compose 读它即可在不升 contentRevision 时刷新上色。
- */
+/** 行级高亮缓存：状态脊 + 视口 token LRU。 */
 @Stable
 class HighlightCache(
     private var highlighter: SyntaxHighlighter,
@@ -37,8 +31,6 @@ class HighlightCache(
             }
         }
 
-    // 已构建的 AnnotatedString 缓存：滚动进入视口时避免重复 buildAnnotatedString。
-    // 失效条件（任一满足即重算）：主题切换 / 高亮代数变化 / 该行 tokens 实例被替换（编辑或惰性 tokenize）。
     private val annotatedCache = mutableMapOf<Int, CachedAnnotated>()
 
     private data class CachedAnnotated(
@@ -48,38 +40,27 @@ class HighlightCache(
         val value: AnnotatedString,
     )
 
-    /** 稠密 token 表：FULL 渐进高亮写入；视口模式可只靠 LRU。 */
     private val sortedLineTokens: MutableList<List<Token>> = mutableListOf()
-
-    /** 每行结束时的词法状态；仅 [0, stateReadyUpTo) 保证正确。 */
     private val lineStates: MutableList<HighlightState?> = mutableListOf()
-
-    /**
-     * 已从文档头连续算准的行数（半开区间右端）。
-     * `stateReadyUpTo == 5` 表示 lineStates[0..4] 可信，可用 lineStates[4] 作为第 5 行的 prev。
-     */
     private var stateReadyUpTo: Int = 0
 
     private var gen = 0
     val generation: Int
         get() = gen
 
-    /**
-     * 视口/编辑导致可见样式变化时递增。与 [generation]（整篇作废）分离，
-     * 避免滚动高亮去动 contentRevision，又能让 ReadOnlyLine 的 remember 失效。
-     */
     var displayEpoch by mutableIntStateOf(0)
         private set
 
     private var visibleStart: Int = 0
     private var visibleEnd: Int = 0
-
-    // 整篇解析才能发现的结构性错误（JSON 尾逗号、XML 标签不匹配）：
-    // 逐行词法看不到它们，只能由外部把第一个出错点交进来覆盖上色。
     private var lexicalError: LexicalError? = null
+    private val heuristicLines = mutableSetOf<Int>()
 
     companion object {
         const val DEFAULT_MAX_CACHE_SIZE = 500
+        val BackgroundSliceBudget: Duration = 5.milliseconds
+        val ViewportSyncStateBudget: Duration = 16.milliseconds
+        private const val HEURISTIC_LOOKBACK = 200
 
         fun calculateOptimalCacheSize(lineCount: Int): Int {
             return when {
@@ -88,6 +69,39 @@ class HighlightCache(
                 lineCount < 10000 -> 2000
                 else -> 3000
             }
+        }
+
+        internal fun leadingIndentCols(line: String): Int {
+            var cols = 0
+            for (c in line) {
+                when (c) {
+                    ' ' -> cols++
+                    '\t' -> cols += 4
+                    else -> return cols
+                }
+            }
+            return -1
+        }
+
+        internal fun findHeuristicStart(
+            startLine: Int,
+            lines: List<String>,
+            lookback: Int = HEURISTIC_LOOKBACK,
+        ): Int {
+            if (startLine <= 0 || startLine >= lines.size) return 0
+            var minIndent = leadingIndentCols(lines[startLine]).let { if (it < 0) Int.MAX_VALUE else it }
+            var best = startLine
+            val limit = maxOf(0, startLine - lookback)
+            for (i in (startLine - 1) downTo limit) {
+                val ind = leadingIndentCols(lines[i])
+                if (ind < 0) return i + 1
+                if (ind < minIndent) {
+                    minIndent = ind
+                    best = i
+                    if (ind == 0) return i
+                }
+            }
+            return best
         }
     }
 
@@ -110,6 +124,7 @@ class HighlightCache(
         annotatedCache.clear()
         lexicalError = null
         lruTokens.clear()
+        heuristicLines.clear()
         sortedLineTokens.clear()
         lineStates.clear()
         stateReadyUpTo = 0
@@ -149,14 +164,13 @@ class HighlightCache(
             rebuild(lines)
             return
         }
-        // 编辑点之后暂视为失效；若传播中状态与旧值收敛，可恢复后面仍有效的脊
         val readyBefore = stateReadyUpTo
         stateReadyUpTo = minOf(stateReadyUpTo, index)
         var prevState: HighlightState? =
             if (index > 0) {
                 if (stateReadyUpTo < index) {
-                    // 脊未覆盖到编辑点：先补齐（不存 token），再改当前行
-                    if (!ensureStateUpTo(index, lines, gen, retainTokens = false)) return
+                    if (ensureStateUpTo(index, lines, gen, retainTokens = false) == null) return
+                    if (stateReadyUpTo < index) return
                 }
                 lineStates.getOrNull(index - 1)
             } else {
@@ -172,6 +186,7 @@ class HighlightCache(
             sortedLineTokens[i] = sorted
             lineStates[i] = newState
             lruTokens[i] = sorted
+            heuristicLines.remove(i)
             annotatedCache.remove(i)
             if (i != index && oldState == newState) {
                 i++
@@ -190,15 +205,12 @@ class HighlightCache(
         bumpDisplay()
     }
 
-    /**
-     * 占位：立刻可渲染纯文本，状态脊未就绪（[stateReadyUpTo]=0）。
-     * 后台 [warmStates] / 视口 [tokenizeVisibleRange] 再推进。
-     */
     fun prefill(lines: List<String>) {
         gen++
         annotatedCache.clear()
         lexicalError = null
         lruTokens.clear()
+        heuristicLines.clear()
         sortedLineTokens.clear()
         lineStates.clear()
         stateReadyUpTo = 0
@@ -209,21 +221,16 @@ class HighlightCache(
         bumpDisplay()
     }
 
-    /**
-     * 把状态脊推进到 [lineExclusive]（半开）。
-     *
-     * @param retainTokens true 时同时写入 token（FULL 渐进）；false 只更新状态（大文件预热/跳转）。
-     * @return 代际失效时 false
-     */
     fun ensureStateUpTo(
         lineExclusive: Int,
         lines: List<String>,
         expectedGen: Int,
         retainTokens: Boolean = false,
-    ): Boolean {
-        if (gen != expectedGen) return false
+        deadline: TimeMark? = null,
+    ): Int? {
+        if (gen != expectedGen) return null
         val target = lineExclusive.coerceIn(0, lines.size)
-        if (target <= stateReadyUpTo) return true
+        if (target <= stateReadyUpTo) return stateReadyUpTo
         syncToList(lines.size)
 
         var prevState: HighlightState? =
@@ -234,7 +241,7 @@ class HighlightCache(
             }
         var i = stateReadyUpTo
         while (i < target) {
-            if (gen != expectedGen) return false
+            if (gen != expectedGen) return null
             val (tokens, newState) = safeTokenize(lines[i], prevState)
             lineStates[i] = newState
             if (retainTokens) {
@@ -243,26 +250,26 @@ class HighlightCache(
             }
             prevState = newState
             i++
+            stateReadyUpTo = i
+            if (deadline != null && deadline.hasPassedNow()) break
         }
-        stateReadyUpTo = target
-        return true
+        return stateReadyUpTo
     }
 
-    /**
-     * FULL 模式：分块写入 token + 推进状态脊。
-     * 要求 [fromIndex] == [stateReadyUpTo] 或已有正确 prev，否则先 [ensureStateUpTo]。
-     */
     fun tokenizeRange(
         fromIndex: Int,
         toIndex: Int,
         lines: List<String>,
         expectedGen: Int,
+        deadline: TimeMark? = null,
     ): Int? {
         if (fromIndex !in lines.indices && fromIndex != lines.size) return null
         val end = minOf(toIndex, lines.size)
         if (fromIndex >= end) return fromIndex
         if (fromIndex > stateReadyUpTo) {
-            if (!ensureStateUpTo(fromIndex, lines, expectedGen, retainTokens = false)) return null
+            ensureStateUpTo(fromIndex, lines, expectedGen, retainTokens = false, deadline = deadline)
+            if (gen != expectedGen) return null
+            if (stateReadyUpTo < fromIndex) return stateReadyUpTo
         }
         syncToList(lines.size)
         var prevState: HighlightState? =
@@ -276,34 +283,58 @@ class HighlightCache(
             lineStates[i] = newState
             prevState = newState
             i++
+            stateReadyUpTo = maxOf(stateReadyUpTo, i)
+            if (deadline != null && deadline.hasPassedNow()) break
         }
-        stateReadyUpTo = maxOf(stateReadyUpTo, i)
         return i
     }
 
-    /**
-     * 大文件后台：只推状态脊、不占 token LRU，为快速跳转铺路。
-     * @return 新的 [stateReadyUpTo]，代际失效返回 null
-     */
     fun warmStates(
         toExclusive: Int,
         lines: List<String>,
         expectedGen: Int,
+        deadline: TimeMark? = null,
     ): Int? {
         val target = toExclusive.coerceIn(0, lines.size)
-        if (!ensureStateUpTo(target, lines, expectedGen, retainTokens = false)) return null
+        return ensureStateUpTo(target, lines, expectedGen, retainTokens = false, deadline = deadline)
+    }
+
+    fun prevStateFor(index: Int): HighlightState? =
+        if (index <= 0) {
+            highlighter.initial()
+        } else {
+            lineStates.getOrNull(index - 1)
+        }
+
+    fun applyLexSlice(
+        slice: LexSliceResult,
+        expectedGen: Int,
+    ): Int? {
+        if (gen != expectedGen) return null
+        if (slice.fromIndex != stateReadyUpTo && slice.fromIndex > stateReadyUpTo) return stateReadyUpTo
+        syncToList(maxOf(sortedLineTokens.size, slice.endExclusive))
+        var i = slice.fromIndex
+        var t = 0
+        while (i < slice.endExclusive && t < slice.states.size) {
+            lineStates[i] = slice.states[t]
+            if (slice.retainTokens && t < slice.tokens.size) {
+                setTokens(i, slice.tokens[t])
+                heuristicLines.remove(i)
+            }
+            i++
+            t++
+        }
+        stateReadyUpTo = maxOf(stateReadyUpTo, i)
+        if (slice.retainTokens) bumpDisplay()
         return stateReadyUpTo
     }
 
-    /**
-     * 视口高亮：先保证 [startLine] 之前状态脊正确，再 tokenize [startLine, endLine)。
-     * 成功写入 token 后递增 [displayEpoch]。
-     */
     fun tokenizeVisibleRange(
         startLine: Int,
         endLine: Int,
         lines: List<String>,
         expectedGen: Int,
+        syncStateBudget: Duration? = ViewportSyncStateBudget,
     ): Int? {
         visibleStart = startLine
         visibleEnd = endLine
@@ -313,7 +344,15 @@ class HighlightCache(
         val end = minOf(endLine, lines.size)
         if (startLine >= end) return startLine
 
-        if (!ensureStateUpTo(startLine, lines, expectedGen, retainTokens = false)) return null
+        val stateDeadline =
+            syncStateBudget?.let { TimeSource.Monotonic.markNow() + it }
+        if (ensureStateUpTo(startLine, lines, expectedGen, retainTokens = false, deadline = stateDeadline) == null) {
+            return null
+        }
+        if (stateReadyUpTo < startLine) {
+            paintHeuristicViewport(startLine, end, lines, expectedGen)
+            return stateReadyUpTo
+        }
 
         syncToList(lines.size)
         var prevState: HighlightState? =
@@ -324,8 +363,8 @@ class HighlightCache(
             if (gen != expectedGen) return null
             val existing = lruTokens[i] ?: sortedLineTokens.getOrNull(i)
             val stateOk = i < stateReadyUpTo && lineStates.getOrNull(i) != null
-            // 已有非空 token 且状态脊覆盖本行：跳过重算
-            if (existing != null && existing.isNotEmpty() && stateOk) {
+            val provisional = i in heuristicLines
+            if (existing != null && existing.isNotEmpty() && stateOk && !provisional) {
                 prevState = lineStates[i]
                 i++
                 continue
@@ -334,6 +373,7 @@ class HighlightCache(
             val sorted = tokens.sortedBy { it.start }
             setTokens(i, sorted)
             lineStates[i] = newState
+            heuristicLines.remove(i)
             annotatedCache.remove(i)
             prevState = newState
             wrote = true
@@ -342,6 +382,68 @@ class HighlightCache(
         stateReadyUpTo = maxOf(stateReadyUpTo, i)
         if (wrote) bumpDisplay()
         return i
+    }
+
+    fun isHeuristicLine(index: Int): Boolean = index in heuristicLines
+
+    fun hasHeuristicIn(
+        startLine: Int,
+        endLine: Int,
+    ): Boolean {
+        if (heuristicLines.isEmpty()) return false
+        val end = endLine.coerceAtLeast(startLine)
+        return (startLine until end).any { it in heuristicLines }
+    }
+
+    fun revalidateVisibleExact(
+        lines: List<String>,
+        expectedGen: Int,
+    ): Boolean {
+        val start = visibleStart
+        val end = visibleEnd
+        if (start >= end || stateReadyUpTo < end) return false
+        if (!hasHeuristicIn(start, end)) return false
+        val done =
+            tokenizeVisibleRange(
+                startLine = start,
+                endLine = end,
+                lines = lines,
+                expectedGen = expectedGen,
+                syncStateBudget = null,
+            )
+        return done != null && !hasHeuristicIn(start, end)
+    }
+
+    private fun paintHeuristicViewport(
+        startLine: Int,
+        endLine: Int,
+        lines: List<String>,
+        expectedGen: Int,
+    ) {
+        if (gen != expectedGen) return
+        val hStart = findHeuristicStart(startLine, lines)
+        var prevState: HighlightState? = highlighter.initial()
+        for (i in hStart until startLine) {
+            if (gen != expectedGen) return
+            val (_, newState) = safeTokenize(lines[i], prevState)
+            prevState = newState
+        }
+        syncToList(lines.size)
+        var wrote = false
+        for (i in startLine until endLine) {
+            if (gen != expectedGen) return
+            val (tokens, newState) = safeTokenize(lines[i], prevState)
+            val sorted = tokens.sortedBy { it.start }
+            lruTokens[i] = sorted
+            if (i in sortedLineTokens.indices) {
+                sortedLineTokens[i] = sorted
+            }
+            heuristicLines.add(i)
+            annotatedCache.remove(i)
+            prevState = newState
+            wrote = true
+        }
+        if (wrote) bumpDisplay()
     }
 
     fun updateVisibleRange(
@@ -356,7 +458,6 @@ class HighlightCache(
 
     fun getCacheSize(): Int = lruTokens.size
 
-    /** 测试/诊断：状态脊已覆盖到哪里（半开右端）。 */
     fun getStateReadyUpTo(): Int = stateReadyUpTo
 
     fun clearLruCache() {
@@ -379,7 +480,6 @@ class HighlightCache(
         keysToRemove.forEach { key ->
             lruTokens.remove(key)
             annotatedCache.remove(key)
-            // 稠密表（FULL 渐进写入）与状态脊一律保留；LRU 只是热缓存
         }
     }
 
@@ -435,12 +535,6 @@ class HighlightCache(
 
     fun getTokens(index: Int): List<Token> = getTokensInternal(index)
 
-    /**
-     * 标注/清除结构性错误位置。
-     *
-     * 这个词法器读不出来的信息只能由整篇解析给出；返回是否真的变了，
-     * 变了就要让 AnnotatedString 缓存整体作废。
-     */
     fun setLexicalError(error: LexicalError?): Boolean {
         if (error == lexicalError) return false
         lexicalError = error
@@ -457,7 +551,7 @@ class HighlightCache(
         val tokens = getTokensInternal(index)
         val cached = annotatedCache[index]
         if (cached != null &&
-            cached.themeRef === theme &&
+            cached.themeRef == theme &&
             cached.gen == gen &&
             cached.tokens === tokens &&
             cached.value.text == line
@@ -489,7 +583,6 @@ class HighlightCache(
                     if (pos < len) {
                         withStyle(SpanStyle(color = theme.foreground)) { append(line.substring(pos)) }
                     }
-                    // 结构性错误的坐标可能落在行尾之外：标注该行最后一个字符，保证看得见
                     lexicalError?.takeIf { it.line == index }?.let { marker ->
                         if (len > 0) {
                             val start = marker.column.coerceIn(0, len - 1)
@@ -509,10 +602,6 @@ class HighlightCache(
         get() = sortedLineTokens.size
 }
 
-/**
- * 词法错误除了换色还要加下划线：红字在深色主题里容易和普通 token 混淆，
- * 下划线才是「这里读不通」的确定信号。
- */
 private fun errorStyle(theme: EditorTheme): SpanStyle =
     SpanStyle(
         color = theme.error,

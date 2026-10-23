@@ -4,6 +4,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
+import zhiqiu.codeeditor.render.EditorTheme
 
 /**
  * 视口惰性高亮 + 状态脊：大文件滚到底仍应正确高亮，无行数硬顶。
@@ -93,12 +97,118 @@ class HighlightCacheLimitTest {
         val ls = lines(6_200)
         cache.prefill(ls)
         val epochBefore = cache.displayEpoch
-        val done = cache.tokenizeVisibleRange(6_100, 6_120, ls, cache.generation)
+        // 测试不设同步预算，避免 CI 上推 6100 行状态脊偶发超时
+        val done =
+            cache.tokenizeVisibleRange(
+                6_100,
+                6_120,
+                ls,
+                cache.generation,
+                syncStateBudget = null,
+            )
         assertNotNull(done)
         assertEquals(6_120, done)
         assertTrue(cache.getTokens(6_100).isNotEmpty())
         assertTrue(cache.getTokens(6_119).isNotEmpty())
         assertTrue(cache.displayEpoch > epochBefore, "视口写入应推进 displayEpoch")
+    }
+
+    @Test
+    fun warmStatesRespectsDeadlineButCompletesAtLeastOneLine() {
+        val cache = HighlightCache(EveryLineHighlighter())
+        val ls = lines(100)
+        cache.prefill(ls)
+        val past = TimeSource.Monotonic.markNow() - 1.milliseconds
+        val ready = cache.warmStates(100, ls, cache.generation, deadline = past)
+        assertEquals(1, ready, "已过期的 deadline 仍应做完当前行再停")
+        assertEquals(1, cache.getStateReadyUpTo())
+        assertTrue(cache.getTokens(0).isEmpty(), "warm 不写 token")
+    }
+
+    @Test
+    fun tokenizeRangeDeadlineStopsMidDocument() {
+        val cache = HighlightCache(EveryLineHighlighter())
+        val ls = lines(80)
+        cache.prefill(ls)
+        val past = TimeSource.Monotonic.markNow() - 1.milliseconds
+        val progressed = cache.tokenizeRange(0, 80, ls, cache.generation, deadline = past)
+        assertEquals(1, progressed)
+        assertTrue(cache.getTokens(0).isNotEmpty())
+        assertTrue(cache.getTokens(1).isEmpty())
+    }
+
+    @Test
+    fun tokenizeVisibleRangeWithTightBudgetUsesHeuristicPaint() {
+        val cache = HighlightCache(EveryLineHighlighter())
+        val ls = lines(200)
+        cache.prefill(ls)
+        val epochBefore = cache.displayEpoch
+        val ready =
+            cache.tokenizeVisibleRange(
+                startLine = 150,
+                endLine = 160,
+                lines = ls,
+                expectedGen = cache.generation,
+                syncStateBudget = Duration.ZERO,
+            )
+        assertTrue(cache.getStateReadyUpTo() < 150)
+        assertEquals(cache.getStateReadyUpTo(), ready)
+        assertTrue(cache.getTokens(150).isNotEmpty())
+        assertTrue(cache.isHeuristicLine(150))
+        assertTrue(cache.displayEpoch > epochBefore)
+    }
+
+    @Test
+    fun findHeuristicStartPrefersLowerIndent() {
+        val ls =
+            listOf(
+                "class A {",
+                "    fun f() {",
+                "        val x = 1",
+                "        val y = 2",
+                "    }",
+                "}",
+            )
+        assertEquals(0, HighlightCache.findHeuristicStart(3, ls))
+        assertEquals(
+            2,
+            HighlightCache.findHeuristicStart(
+                3,
+                listOf(
+                    "        deep1",
+                    "        deep2",
+                    "    mid",
+                    "        deep3",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun exactViewportReplacesHeuristicTokens() {
+        val cache = HighlightCache(AlternatingCommentHighlighter())
+        val ls = lines(20)
+        cache.prefill(ls)
+        cache.tokenizeVisibleRange(10, 14, ls, cache.generation, syncStateBudget = Duration.ZERO)
+        assertTrue(cache.isHeuristicLine(10))
+        cache.warmStates(14, ls, cache.generation)
+        assertTrue(cache.revalidateVisibleExact(ls, cache.generation))
+        assertTrue(cache.getTokens(10).isNotEmpty())
+        assertTrue(!cache.isHeuristicLine(10))
+        assertEquals(TokenType.Keyword, cache.getTokens(10).first().type)
+    }
+
+    @Test
+    fun annotatedLineCacheSurvivesEqualThemeInstances() {
+        val cache = HighlightCache(EveryLineHighlighter())
+        val ls = listOf("fun main() {}")
+        cache.rebuild(ls)
+        val a = cache.getAnnotatedLine(0, ls[0], EditorTheme.dark())
+        val b = cache.getAnnotatedLine(0, ls[0], EditorTheme.Dark)
+        assertTrue(a === b)
+        val c = cache.getAnnotatedLine(0, ls[0], EditorTheme.light())
+        assertTrue(a !== c)
+        assertEquals(ls[0], c.text)
     }
 
     @Test
