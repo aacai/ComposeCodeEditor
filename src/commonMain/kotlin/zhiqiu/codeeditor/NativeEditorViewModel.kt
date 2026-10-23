@@ -964,60 +964,69 @@ class NativeEditorViewModel(
         handleSearchQueryChanged(newState.searchQuery)
     }
 
-    /** 同步重算当前匹配（用于替换后刷新，避免依赖防抖任务）。 */
-    private fun refreshSearchNow() {
+    /** 后台重算匹配（替换后刷新）；返回最新命中列表。 */
+    private suspend fun refreshSearchNow(): List<SearchMatch> {
         searchJob?.cancel()
         val s = _state.value
         val query = s.searchQuery
         if (query.isEmpty() || validateRegex(query)) {
-            // 空查询或正则非法：清空匹配并保留/设置错误标记
-            _state.value = s.copy(
-                searchMatches = emptyList(),
-                searchCurrentIndex = 0,
-                searchRegexError = if (query.isNotEmpty()) true else s.searchRegexError,
-            )
-            return
+            _state.value =
+                s.copy(
+                    searchMatches = emptyList(),
+                    searchCurrentIndex = 0,
+                    searchRegexError = if (query.isNotEmpty()) true else s.searchRegexError,
+                )
+            return emptyList()
         }
-        val text = s.content.getText()
+        val case = s.isCaseSensitive
+        val whole = s.isWholeWord
+        val regex = s.isRegex
+        val text = withContext(Dispatchers.Main) { _state.value.content.getText() }
         val matches =
-            runCatching {
-                findMatches(text, query, s.isCaseSensitive, s.isWholeWord, s.isRegex)
-            }.getOrDefault(emptyList())
-        _state.value = s.copy(searchMatches = matches, searchCurrentIndex = 0)
+            try {
+                withContext(defaultDispatcher) { findMatches(text, query, case, whole, regex) }
+            } catch (t: Throwable) {
+                reportError("SearchRefresh", t)
+                emptyList()
+            }
+        _state.value = _state.value.copy(searchMatches = matches, searchCurrentIndex = 0)
+        return matches
     }
 
     private fun handleReplaceNext() {
-        val s = _state.value
-        val matches = s.searchMatches
-        if (matches.isEmpty()) return
-        val idx = s.searchCurrentIndex.coerceIn(0, matches.lastIndex)
-        val lines = s.content.getLines()
-        val range = matchRange(matches[idx], lines)
-        val text = s.content.getText()
-        if (range.last >= text.length) return
-        val newText = text.replaceRange(range, s.replaceQuery)
-        handleContentChanged(newText)
-        refreshSearchNow()
-        val refreshed = _state.value.searchMatches
-        if (refreshed.isNotEmpty()) locateMatch(refreshed, idx.coerceAtMost(refreshed.lastIndex))
+        viewModelScope.launch {
+            val s = _state.value
+            val matches = s.searchMatches
+            if (matches.isEmpty()) return@launch
+            val idx = s.searchCurrentIndex.coerceIn(0, matches.lastIndex)
+            val lines = s.content.getLines()
+            val range = matchRange(matches[idx], lines)
+            val text = s.content.getText()
+            if (range.last >= text.length) return@launch
+            val newText = text.replaceRange(range, s.replaceQuery)
+            handleContentChanged(newText)
+            val refreshed = refreshSearchNow()
+            if (refreshed.isNotEmpty()) locateMatch(refreshed, idx.coerceAtMost(refreshed.lastIndex))
+        }
     }
 
     private fun handleReplaceAll() {
-        val s = _state.value
-        val matches = s.searchMatches
-        if (matches.isEmpty()) return
-        val lines = s.content.getLines()
-        val text = s.content.getText()
-        var newText = text
-        // 从后往前替换，低位匹配偏移不受影响（位于其后的文本已先处理）
-        for (i in matches.lastIndex downTo 0) {
-            val r = matchRange(matches[i], lines)
-            if (r.first >= 0 && r.last < newText.length) {
-                newText = newText.replaceRange(r, s.replaceQuery)
+        viewModelScope.launch {
+            val s = _state.value
+            val matches = s.searchMatches
+            if (matches.isEmpty()) return@launch
+            val lines = s.content.getLines()
+            val text = s.content.getText()
+            var newText = text
+            for (i in matches.lastIndex downTo 0) {
+                val r = matchRange(matches[i], lines)
+                if (r.first >= 0 && r.last < newText.length) {
+                    newText = newText.replaceRange(r, s.replaceQuery)
+                }
             }
+            handleContentChanged(newText)
+            refreshSearchNow()
         }
-        handleContentChanged(newText)
-        refreshSearchNow()
     }
 
     /**
