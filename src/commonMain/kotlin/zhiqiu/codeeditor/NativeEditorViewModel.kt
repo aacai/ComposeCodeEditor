@@ -29,6 +29,7 @@ import zhiqiu.codeeditor.buffer.ChunkedLineBuffer
 import zhiqiu.codeeditor.text.AutoClosePairs
 import zhiqiu.codeeditor.text.CodeFolding
 import zhiqiu.codeeditor.text.DocumentFormatter
+import zhiqiu.codeeditor.text.EditDelta
 import zhiqiu.codeeditor.text.EditOp
 import zhiqiu.codeeditor.text.EnterIndent
 import zhiqiu.codeeditor.text.Indent
@@ -40,6 +41,7 @@ import zhiqiu.codeeditor.buffer.ILineBuffer
 import zhiqiu.codeeditor.buffer.LargeFileStrategy
 import zhiqiu.codeeditor.buffer.LineBuffer
 import zhiqiu.codeeditor.buffer.PerformanceMode
+import zhiqiu.codeeditor.render.RenderPlan
 import zhiqiu.codeeditor.text.SelectionRange
 import zhiqiu.codeeditor.highlight.SyntaxHighlighter
 import zhiqiu.codeeditor.highlight.SyntaxHighlighterRegistry
@@ -627,7 +629,7 @@ class NativeEditorViewModel(
 
     /**
      * 回车拆行：新行继承当前行缩进，光标前是开括号（Python 还含 `:`）时再进一级，
-     * 详见 [EnterIndent]。结构性变更后全量重建高亮缓存。
+     * 详见 [EnterIndent]。高亮走 [EditDelta] 局部失效。
      */
     private fun handleEnterKey(
         line: Int,
@@ -647,7 +649,14 @@ class NativeEditorViewModel(
             currentState.content.insertLine(line + 1 + offset, text)
         }
         val newLines = currentState.content.getLines()
-        highlightCache.rebuild(newLines)
+        highlightCache.applyDelta(
+            EditDelta.replaceLines(
+                startLine = line,
+                oldLineCount = 1,
+                newLineCount = 1 + split.appendedLines.size,
+            ),
+            newLines,
+        )
         undoManager.push(
             EditOp.Enter(
                 lineIndex = line,
@@ -1376,6 +1385,9 @@ class NativeEditorViewModel(
         if (doc.isEmpty()) return
         val start = startLine.coerceIn(0, doc.lastIndex)
         val end = endLineExclusive.coerceIn(start, doc.size)
+        highlightCache.applyRenderPlan(
+            RenderPlan.fromViewport(doc.size, start, end),
+        )
         highlightCache.tokenizeVisibleRange(
             startLine = start,
             endLine = end,

@@ -8,6 +8,8 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 import zhiqiu.codeeditor.render.EditorTheme
+import zhiqiu.codeeditor.render.RenderPlan
+import zhiqiu.codeeditor.text.EditDelta
 
 /**
  * 视口惰性高亮 + 状态脊：大文件滚到底仍应正确高亮，无行数硬顶。
@@ -222,5 +224,31 @@ class HighlightCacheLimitTest {
         assertTrue(cache.getTokens(1).isNotEmpty())
         assertTrue(cache.displayEpoch > epochBefore)
         assertTrue(cache.getStateReadyUpTo() >= 2)
+    }
+
+    @Test
+    fun applyDeltaInsertsLinesWithoutFullRebuild() {
+        val cache = HighlightCache(EveryLineHighlighter())
+        val ls = lines(3).toMutableList()
+        cache.rebuild(ls)
+        val genBefore = cache.generation
+        ls.add(1, "inserted")
+        cache.applyDelta(EditDelta.replaceLines(1, 0, 1), ls)
+        assertEquals(genBefore, cache.generation)
+        assertEquals(4, cache.size)
+        assertTrue(cache.getTokens(1).isNotEmpty())
+        assertTrue(cache.getStateReadyUpTo() >= 2)
+    }
+
+    @Test
+    fun applyRenderPlanDropsFarTokens() {
+        val cache = HighlightCache(EveryLineHighlighter(), lineCount = 50, maxCacheSize = 200)
+        val ls = lines(50)
+        cache.rebuild(ls)
+        assertEquals(50, cache.getCacheSize())
+        cache.applyRenderPlan(RenderPlan.fromViewport(50, 20, 25, preserveSlop = 2))
+        // preserve = [18, 27)
+        assertEquals(9, cache.getCacheSize())
+        assertTrue(cache.getTokens(22).isNotEmpty())
     }
 }

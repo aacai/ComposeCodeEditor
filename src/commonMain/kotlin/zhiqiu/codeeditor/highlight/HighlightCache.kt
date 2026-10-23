@@ -13,7 +13,10 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import zhiqiu.codeeditor.render.EditorTheme
+import zhiqiu.codeeditor.render.RenderPlan
 import zhiqiu.codeeditor.render.tokenToColor
+import zhiqiu.codeeditor.text.EditDelta
+import zhiqiu.codeeditor.text.InvalLines
 import zhiqiu.codeeditor.text.LexicalError
 
 /** 行级高亮缓存：状态脊 + 视口 token LRU。 */
@@ -156,14 +159,61 @@ class HighlightCache(
     fun updateLine(
         index: Int,
         lines: List<String>,
-        maxPropagate: Int = 4000,
+        maxPropagate: Int = EditDelta.DEFAULT_PROPAGATE,
     ) {
-        if (index !in lines.indices) return
+        applyDelta(EditDelta.singleLine(index), lines, maxPropagate)
+    }
+
+    /**
+     * 按 [EditDelta] 调整状态脊并只失效局部高亮（Xi InvalLines）。
+     */
+    fun applyDelta(
+        delta: EditDelta,
+        lines: List<String>,
+        maxPropagate: Int = EditDelta.DEFAULT_PROPAGATE,
+    ) {
+        if (delta.startLine > lines.size) return
+        val expectedOld = lines.size - delta.lineDelta
+        when {
+            sortedLineTokens.isEmpty() -> syncToList(lines.size)
+            sortedLineTokens.size == expectedOld && delta.lineDelta != 0 -> adjustSpine(delta)
+            sortedLineTokens.size == lines.size -> Unit
+            else -> {
+                rebuild(lines)
+                return
+            }
+        }
         syncToList(lines.size)
         if (sortedLineTokens.size != lines.size) {
             rebuild(lines)
             return
         }
+        val inval =
+            when (val h = highlighter) {
+                is IncrementalSyntaxHighlighter -> h.invalForEdit(delta)
+                else -> delta.toInvalLines(maxPropagate)
+            }
+        applyInval(inval.copy(propagateHint = maxPropagate), lines)
+    }
+
+    fun applyInval(
+        inval: InvalLines,
+        lines: List<String>,
+    ) {
+        if (inval.isEmpty && inval.startLine >= lines.size) return
+        if (inval.startLine !in 0..lines.size) return
+        syncToList(lines.size)
+        if (sortedLineTokens.size != lines.size) {
+            rebuild(lines)
+            return
+        }
+        val index = inval.startLine.coerceIn(0, lines.size)
+        if (index >= lines.size) {
+            stateReadyUpTo = minOf(stateReadyUpTo, index)
+            bumpDisplay()
+            return
+        }
+        val maxPropagate = inval.propagateHint
         val readyBefore = stateReadyUpTo
         stateReadyUpTo = minOf(stateReadyUpTo, index)
         var prevState: HighlightState? =
@@ -178,6 +228,7 @@ class HighlightCache(
             }
         var i = index
         var converged = false
+        val forceEnd = inval.endLineExclusive.coerceIn(index, lines.size)
         while (i < lines.size && i - index <= maxPropagate) {
             if (i >= sortedLineTokens.size) break
             val oldState = lineStates.getOrNull(i)
@@ -188,7 +239,8 @@ class HighlightCache(
             lruTokens[i] = sorted
             heuristicLines.remove(i)
             annotatedCache.remove(i)
-            if (i != index && oldState == newState) {
+            val pastForced = i + 1 >= forceEnd
+            if (pastForced && i != index && oldState == newState) {
                 i++
                 converged = true
                 break
@@ -203,6 +255,71 @@ class HighlightCache(
                 maxOf(stateReadyUpTo, i)
             }
         bumpDisplay()
+    }
+
+    private fun adjustSpine(delta: EditDelta) {
+        val start = delta.startLine.coerceAtLeast(0)
+        val oldEnd = start + delta.oldLineCount
+        val lineDelta = delta.lineDelta
+        repeat(delta.oldLineCount) {
+            if (start < sortedLineTokens.size) sortedLineTokens.removeAt(start)
+            if (start < lineStates.size) lineStates.removeAt(start)
+        }
+        rekeyLineMaps(start, oldEnd, lineDelta)
+        for (a in 0 until delta.newLineCount) {
+            val at = (start + a).coerceAtMost(sortedLineTokens.size)
+            sortedLineTokens.add(at, emptyList())
+            lineStates.add(at.coerceAtMost(lineStates.size), null)
+        }
+        when {
+            visibleStart >= oldEnd -> visibleStart = (visibleStart + lineDelta).coerceAtLeast(0)
+            visibleStart >= start -> visibleStart = start
+        }
+        when {
+            visibleEnd >= oldEnd -> visibleEnd = (visibleEnd + lineDelta).coerceAtLeast(0)
+            visibleEnd > start -> visibleEnd = start
+        }
+        stateReadyUpTo = minOf(stateReadyUpTo, start)
+    }
+
+    private fun rekeyLineMaps(
+        start: Int,
+        oldEnd: Int,
+        lineDelta: Int,
+    ) {
+        fun <V> rekey(map: MutableMap<Int, V>) {
+            if (map.isEmpty()) return
+            val next = linkedMapOf<Int, V>()
+            for ((k, v) in map) {
+                when {
+                    k < start -> next[k] = v
+                    k < oldEnd -> Unit
+                    else -> {
+                        val nk = k + lineDelta
+                        if (nk >= 0) next[nk] = v
+                    }
+                }
+            }
+            map.clear()
+            map.putAll(next)
+        }
+        rekey(lruTokens)
+        rekey(annotatedCache)
+        if (heuristicLines.isNotEmpty()) {
+            val next = mutableSetOf<Int>()
+            for (k in heuristicLines) {
+                when {
+                    k < start -> next.add(k)
+                    k < oldEnd -> Unit
+                    else -> {
+                        val nk = k + lineDelta
+                        if (nk >= 0) next.add(nk)
+                    }
+                }
+            }
+            heuristicLines.clear()
+            heuristicLines.addAll(next)
+        }
     }
 
     fun prefill(lines: List<String>) {
@@ -464,6 +581,20 @@ class HighlightCache(
         lruTokens.clear()
     }
 
+    /**
+     * 按 RenderPlan：视口外且不在 preserve 带的 token 可丢。
+     */
+    fun applyRenderPlan(plan: RenderPlan) {
+        visibleStart = plan.viewportStart
+        visibleEnd = plan.viewportEnd
+        val keys =
+            lruTokens.keys.filter { !plan.containsPreserve(it) }.toList()
+        for (k in keys) {
+            lruTokens.remove(k)
+            annotatedCache.remove(k)
+        }
+    }
+
     fun trimInvisibleCache(threshold: Float = 0.8f) {
         if (lruTokens.size < maxCacheSize * threshold) return
 
@@ -471,10 +602,15 @@ class HighlightCache(
         val toRemove = lruTokens.size - targetSize
         if (toRemove <= 0) return
 
-        val visibleSet = (visibleStart until visibleEnd).toSet()
+        val plan =
+            RenderPlan.fromViewport(
+                lineCount = sortedLineTokens.size,
+                viewportStart = visibleStart,
+                viewportEnd = visibleEnd,
+            )
         val keysToRemove =
             lruTokens.keys
-                .filter { it !in visibleSet }
+                .filter { !plan.containsPreserve(it) }
                 .take(toRemove)
 
         keysToRemove.forEach { key ->
