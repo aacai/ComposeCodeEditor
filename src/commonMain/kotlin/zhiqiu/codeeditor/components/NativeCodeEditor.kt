@@ -133,9 +133,11 @@ import zhiqiu.codeeditor.text.FoldViewport
 import zhiqiu.codeeditor.highlight.HighlightCache
 import zhiqiu.codeeditor.buffer.ILineBuffer
 import zhiqiu.codeeditor.buffer.PerformanceMode
+import zhiqiu.codeeditor.text.IncrementalWordWrap
 import zhiqiu.codeeditor.text.SelectionEdit
 import zhiqiu.codeeditor.text.SelectionRange
 import zhiqiu.codeeditor.text.WordBoundary
+import zhiqiu.codeeditor.text.WrapBreaksCache
 import zhiqiu.codeeditor.render.caretXBeforeScroll
 import zhiqiu.codeeditor.render.isDarkTheme
 import zhiqiu.codeeditor.render.preferHomeLineIfNear
@@ -209,6 +211,7 @@ private fun buildWrapRowsLayout(
     foldViewport: FoldViewport,
     isWordWrap: Boolean,
     visCols: Int,
+    wrapBreaks: WrapBreaksCache? = null,
 ): WrapRowsLayout {
     val lineCount = lines.size
     val firstRow = IntArray(lineCount) { -1 }
@@ -224,10 +227,13 @@ private fun buildWrapRowsLayout(
         }
     } else {
         val cols = visCols.coerceAtLeast(1)
+        wrapBreaks?.setVisCols(cols)
         for (vis in 0 until visibleCount) {
             val logical = foldViewport.logicalAt(vis)
             val len = lines.getOrNull(logical)?.length ?: 0
-            val rows = if (len == 0) 1 else (len + cols - 1) / cols
+            val rows =
+                wrapBreaks?.rowCount(logical, len)
+                    ?: (IncrementalWordWrap.breaksForLine(len, cols).size - 1).coerceAtLeast(1)
             firstRow[logical] = total
             span[logical] = rows
             total += rows
@@ -251,14 +257,11 @@ private fun rowKey(line: Int, row: Int): Int =
 
 /** 换行模式：逻辑行内某列的视觉行序号。 */
 private fun wrapRowOfColumn(col: Int, visCols: Int): Int =
-    if (visCols <= 0) 0 else col / visCols
+    IncrementalWordWrap.rowOfColumn(col, visCols)
 
 /** 换行模式：视觉行 r 在逻辑行内的全局列区间 [start, end)。 */
-private fun wrapRowRange(lineLen: Int, r: Int, visCols: Int): Pair<Int, Int> {
-    if (visCols <= 0) return 0 to lineLen
-    val start = r * visCols
-    return start to minOf(start + visCols, lineLen).coerceAtLeast(start)
-}
+private fun wrapRowRange(lineLen: Int, r: Int, visCols: Int): Pair<Int, Int> =
+    IncrementalWordWrap.rowRange(lineLen, r, visCols)
 
 private val SELECTION_HANDLE_COLOR = Color(0xFF2196F3)
 
@@ -1198,13 +1201,18 @@ fun NativeCodeEditor(
                         } else {
                             0
                         }
+                    val wrapBreaksCache =
+                        remember(visCols) {
+                            WrapBreaksCache().also { it.setVisCols(visCols) }
+                        }
                     val wrapRowsLayout =
-                        remember(lines, foldViewport, state.isWordWrap, visCols) {
+                        remember(lines, foldViewport, state.isWordWrap, visCols, wrapBreaksCache) {
                             buildWrapRowsLayout(
                                 lines = lines,
                                 foldViewport = foldViewport,
                                 isWordWrap = state.isWordWrap,
                                 visCols = visCols,
+                                wrapBreaks = wrapBreaksCache,
                             )
                         }
                     // 同步给主机级副本（行号列/覆盖层等 BoxWithConstraints 之外的使用方）
