@@ -26,7 +26,8 @@ fun buildLineDecorations(
     lineLength: Int,
     selectionRange: IntRange?,
     searchMatches: List<SearchMatch>,
-    searchCurrentIndex: Int,
+    searchCurrentIndex: Int = -1,
+    searchCurrent: SearchMatch? = null,
     inlineHighlights: Map<Int, List<IntRange>>,
     diffInlineText: Map<Int, List<IntRange>>,
     theme: EditorTheme,
@@ -46,18 +47,25 @@ fun buildLineDecorations(
             out.add(LineDecoration(start, end, DecorationKind.Selection, theme.selectionBackground))
         }
     }
-    searchMatches.forEachIndexed { idx, m ->
-        if (m.line != lineIndex) return@forEachIndexed
+    val current =
+        searchCurrent
+            ?: searchMatches.getOrNull(searchCurrentIndex)
+    searchMatches.forEach { m ->
+        if (m.line != lineIndex) return@forEach
         val start = m.startCol.coerceIn(0, lineLength)
         val end = m.endCol.coerceIn(0, lineLength)
         if (end > start) {
-            val current = idx == searchCurrentIndex
+            val isCurrent =
+                current != null &&
+                    m.line == current.line &&
+                    m.startCol == current.startCol &&
+                    m.endCol == current.endCol
             out.add(
                 LineDecoration(
                     start,
                     end,
-                    if (current) DecorationKind.FindCurrent else DecorationKind.Find,
-                    if (current) theme.findCurrentBackground else theme.findBackground,
+                    if (isCurrent) DecorationKind.FindCurrent else DecorationKind.Find,
+                    if (isCurrent) theme.findCurrentBackground else theme.findBackground,
                 ),
             )
         }

@@ -269,7 +269,7 @@ private val SELECTION_HANDLE_COLOR = Color(0xFF2196F3)
 private const val MAX_LINES_FOR_MEASURE_WIDTH = 20_000
 
 /** 临时 on-device 诊断开关：定位「超长行滚不到行尾/点击跳回第一屏」。验收后必须删除。 */
-private const val DEBUG_SUPERLONG = true
+private const val DEBUG_SUPERLONG = false
 
 /** 最宽行之外再预留的字符数（光标/手柄/末尾可读性）。 */
 private const val CONTENT_END_PADDING_CHARS = 4
@@ -461,6 +461,10 @@ fun NativeCodeEditor(
     // 避免大文件每次 tokenize 块都全量 getLines + 重测最宽行。
     val lines = remember(state.content, state.contentRevision) { state.content.getLines() }
     val lineCount = lines.size
+    val searchMatchesByLine =
+        remember(state.searchMatches) {
+            state.searchMatches.groupBy { it.line }
+        }
     val foldViewport = remember(lineCount, state.foldRegions, state.collapsedFolds, foldingEnabled) {
         if (!foldingEnabled) FoldViewport.identity(lineCount)
         else CodeFolding.viewport(lineCount, state.foldRegions, state.collapsedFolds)
@@ -1732,7 +1736,9 @@ val (rawLine, _) =
                                             onCursorChange(line, col)
                                         },
                                         onRequestEditFocus = requestEditFocus,
-                                        selection = displaySelection,
+                                        // 仅相交行携带选区，缩小拖选时无关行的脏区
+                                        selection =
+                                            displaySelection?.takeIf { it.coversLine(logicalIndex) },
                                         onSelectionStarted =
                                         onSelectionStarted,
                                         onSelectionUpdated =
@@ -1752,8 +1758,10 @@ val (rawLine, _) =
                                         },
                                         onLayout = stableOnLayout,
                                         lineLayouts = lineLayouts,
-                                        searchMatches = state.searchMatches,
-                                        searchCurrentIndex = state.searchCurrentIndex,
+                                        searchMatches =
+                                            searchMatchesByLine[logicalIndex].orEmpty(),
+                                        searchCurrent =
+                                            state.searchMatches.getOrNull(state.searchCurrentIndex),
                                         inlineHighlights = inlineHighlights,
                                         diffInlineText = diffInlineText,
                                         diffInlineTextColor = diffInlineTextColor,
@@ -2142,7 +2150,7 @@ private fun ReadOnlyLine(
     lineLayouts: LineLayoutStore,
     onLayout: (TextLayoutResult) -> Unit,
     searchMatches: List<SearchMatch> = emptyList(),
-    searchCurrentIndex: Int = 0,
+    searchCurrent: SearchMatch? = null,
     inlineHighlights: Map<Int, List<IntRange>> = emptyMap(),
     diffInlineText: Map<Int, List<IntRange>> = emptyMap(),
     diffInlineTextColor: Color = Color(0xFFE53935),
@@ -2200,9 +2208,9 @@ private fun ReadOnlyLine(
             line.length,
             lineSelectionRange,
             searchMatches,
-            searchCurrentIndex,
-            inlineHighlights,
-            diffInlineText,
+            searchCurrent,
+            inlineHighlights[lineIndex],
+            diffInlineText[lineIndex],
             diffInlineTextColor,
             theme,
         ) {
@@ -2211,7 +2219,7 @@ private fun ReadOnlyLine(
                 lineLength = line.length,
                 selectionRange = lineSelectionRange,
                 searchMatches = searchMatches,
-                searchCurrentIndex = searchCurrentIndex,
+                searchCurrent = searchCurrent,
                 inlineHighlights = inlineHighlights,
                 diffInlineText = diffInlineText,
                 theme = theme,

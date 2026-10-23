@@ -123,6 +123,12 @@ data class SelectionRange(
      *
      * 如果该行没有选中内容则返回 null。
      */
+    /** 选区是否覆盖该逻辑行（含空选区落点行）。 */
+    fun coversLine(line: Int): Boolean {
+        val n = normalize()
+        return line in n.startLine..n.endLine
+    }
+
     fun getSelectedRangeInLine(line: Int): IntRange? {
         val n = normalize()
         if (n.columnar) {
