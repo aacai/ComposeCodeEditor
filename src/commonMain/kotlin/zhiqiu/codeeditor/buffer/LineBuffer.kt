@@ -4,6 +4,8 @@ class LineBuffer(
 ) : ILineBuffer {
     private val lines = GapBuffer()
     private var cachedList: List<String>? = null
+    // 运行中的字符数/内容摘要：行级编辑增量维护，状态栏与 isModified 不再拼全文
+    private val stats = RunningContentStats()
 
     init {
         replaceAll(text)
@@ -25,6 +27,10 @@ class LineBuffer(
         cachedList = null
     }
 
+    override fun getLength(): Int = stats.length
+
+    override fun contentDigest(): Long = stats.digest
+
     override fun estimateMemoryUsage(): Long {
         var total = 0L
         cachedList?.let { list ->
@@ -39,15 +45,22 @@ class LineBuffer(
         index: Int,
         line: String,
     ) {
+        val before = lines.size
         lines.insertLine(index, line)
+        stats.onLineInserted(line, before)
         clearCache()
     }
 
     override fun deleteLine(index: Int) {
         if (lines.size > 1) {
+            val old = lines.getLine(index)
+            val before = lines.size
             lines.deleteLine(index)
+            stats.onLineDeleted(old, before)
         } else {
+            val old = lines.getLine(0)
             lines.setLine(0, "")
+            stats.onLineReplaced(old, "")
         }
         clearCache()
     }
@@ -57,7 +70,9 @@ class LineBuffer(
         text: String,
     ) {
         if (index in 0 until lines.size) {
+            val old = lines.getLine(index)
             lines.setLine(index, text)
+            stats.onLineReplaced(old, text)
             clearCache()
         }
     }
@@ -71,6 +86,7 @@ class LineBuffer(
                 lines.insertLine(index, line)
             }
         }
+        stats.reset(text)
         clearCache()
     }
 

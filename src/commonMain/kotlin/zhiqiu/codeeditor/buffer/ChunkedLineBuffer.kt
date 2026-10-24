@@ -29,6 +29,9 @@ class ChunkedLineBuffer(
     private var fileSize: Long = 0L
     private var initialized = false
     private val editOps = mutableListOf<EditOp>()
+    // 运行中的字符数/内容摘要：首次访问才整篇读一次（与 getText 同数量级），
+    // 之后随行级编辑增量维护，大文件编辑不再每次拼全文
+    private var stats: RunningContentStats? = null
 
     init {
         initialize()
@@ -124,18 +127,25 @@ class ChunkedLineBuffer(
         if (index < 0 || index > lineCount) {
             throw IndexOutOfBoundsException("Line index: $index, Line count: $lineCount")
         }
+        val before = lineCount
         editOps.add(EditOp.InsertLine(index, line, System.nanoTime()))
+        stats?.onLineInserted(line, before)
     }
 
     override fun deleteLine(index: Int) {
         if (index < 0 || index >= lineCount) {
             throw IndexOutOfBoundsException("Line index: $index, Line count: $lineCount")
         }
+        val before = lineCount
         if (lineCount <= 1) {
+            val old = getLine(0)
             editOps.add(EditOp.ModifyLine(0, "", System.nanoTime()))
+            stats?.onLineReplaced(old, "")
             return
         }
+        val old = getLine(index)
         editOps.add(EditOp.DeleteLine(index, System.nanoTime()))
+        stats?.onLineDeleted(old, before)
     }
 
     override fun setLine(
@@ -145,7 +155,9 @@ class ChunkedLineBuffer(
         if (index < 0 || index >= lineCount) {
             throw IndexOutOfBoundsException("Line index: $index, Line count: $lineCount")
         }
+        val old = getLine(index)
         editOps.add(EditOp.ModifyLine(index, text, System.nanoTime()))
+        stats?.onLineReplaced(old, text)
     }
 
     override fun replaceAll(text: String) {
@@ -160,12 +172,27 @@ class ChunkedLineBuffer(
             loadedChunks[0] = lines
             _lineCount = lines.size
         }
+        stats = null
     }
 
     override fun getText(): String = getLines().joinToString("\n")
 
+    override fun getLength(): Int = ensureStats().length
+
+    override fun contentDigest(): Long = ensureStats().digest
+
     override fun clearCache() {
         loadedChunks.clear()
+    }
+
+    /** 字符数/摘要的惰性初始化：流式读一遍（读完即丢，不物化全篇），之后由编辑增量维护。 */
+    private fun ensureStats(): RunningContentStats {
+        stats?.let { return it }
+        val fresh = RunningContentStats()
+        val count = lineCount
+        fresh.resetStreaming(count) { getLine(it) }
+        stats = fresh
+        return fresh
     }
 
     override fun estimateMemoryUsage(): Long {
