@@ -20,7 +20,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
@@ -54,8 +53,8 @@ fun NativeEditorStatusBar(
         ) {
             StatusItem("Ln ${state.cursorLine + 1}, Col ${state.cursorColumn + 1}")
             Spacer(modifier = Modifier.width(8.dp))
-            val charCount = remember(state.content) { state.content.getText().length }
-            StatusItem(stringResource(Res.string.editor_chars, charCount))
+            // 字符数走运行中统计：getText().length 会拼一遍全文
+            StatusItem(stringResource(Res.string.editor_chars, state.content.getLength()))
             Spacer(modifier = Modifier.width(8.dp))
             StatusItem("UTF-8")
             Spacer(modifier = Modifier.width(8.dp))

@@ -122,8 +122,44 @@ class HighlightCache(
             emptyList<Token>() to (prevState ?: HighlightState())
         }
 
+    /**
+     * 单行 token 的统一出口：文档级高亮（Tree-sitter）就绪时优先用它，
+     * 否则回退逐行高亮。两条路产出同一种 [Token]，渲染端无感。
+     */
+    private fun lineTokens(
+        index: Int,
+        line: String,
+        prevState: HighlightState?,
+    ): Pair<List<Token>, HighlightState> {
+        val doc = highlighter as? DocumentSyntaxHighlighter
+        if (doc != null && doc.isDocumentReady) {
+            doc.tokensForLine(index)?.let { return it to (prevState ?: HighlightState()) }
+        }
+        return safeTokenize(line, prevState)
+    }
+
+    /** 内容已变：文档级结论作废（重解析完成前各行走逐行回退）。 */
+    private fun invalidateDocument() {
+        (highlighter as? DocumentSyntaxHighlighter)?.invalidateDocument()
+    }
+
+    /**
+     * 文档级高亮整篇重解析完成：作废全部行 token，
+     * 之后视口重绘 / 滚动按需重新取 token。逐行高亮器不走这里。
+     */
+    fun invalidateLineTokens() {
+        for (i in sortedLineTokens.indices) {
+            sortedLineTokens[i] = emptyList()
+        }
+        lruTokens.clear()
+        annotatedCache.clear()
+        heuristicLines.clear()
+        bumpDisplay()
+    }
+
     fun rebuild(lines: List<String>) {
         gen++
+        invalidateDocument()
         annotatedCache.clear()
         lexicalError = null
         lruTokens.clear()
@@ -133,7 +169,7 @@ class HighlightCache(
         stateReadyUpTo = 0
         var prevState: HighlightState? = highlighter.initial()
         for ((index, line) in lines.withIndex()) {
-            val (tokens, newState) = safeTokenize(line, prevState)
+            val (tokens, newState) = lineTokens(index, line, prevState)
             val sorted = tokens.sortedBy { it.start }
             lruTokens[index] = sorted
             sortedLineTokens.add(sorted)
@@ -173,6 +209,8 @@ class HighlightCache(
         maxPropagate: Int = EditDelta.DEFAULT_PROPAGATE,
     ) {
         if (delta.startLine > lines.size) return
+        // 内容已变：文档级（Tree-sitter）结论作废，重解析完成前各行走逐行回退
+        invalidateDocument()
         // 超大块改脊 O(n) 搬移仍贵，直接全量重建更稳
         if (delta.oldLineCount + delta.newLineCount > 8_000) {
             rebuild(lines)
@@ -237,7 +275,7 @@ class HighlightCache(
         while (i < lines.size && i - index <= maxPropagate) {
             if (i >= sortedLineTokens.size) break
             val oldState = lineStates.getOrNull(i)
-            val (tokens, newState) = safeTokenize(lines[i], prevState)
+            val (tokens, newState) = lineTokens(i, lines[i], prevState)
             val sorted = tokens.sortedBy { it.start }
             sortedLineTokens[i] = sorted
             lineStates[i] = newState
@@ -335,6 +373,7 @@ class HighlightCache(
 
     fun prefill(lines: List<String>) {
         gen++
+        invalidateDocument()
         annotatedCache.clear()
         lexicalError = null
         lruTokens.clear()
@@ -359,6 +398,14 @@ class HighlightCache(
         if (gen != expectedGen) return null
         val target = lineExclusive.coerceIn(0, lines.size)
         if (target <= stateReadyUpTo) return stateReadyUpTo
+        // 文档级高亮（Tree-sitter）没有逐行状态脊：token 由整篇解析按行供给，
+        // 脊推到哪里没有意义，直接标记到位，省掉一次全文逐行扫描
+        val doc = highlighter as? DocumentSyntaxHighlighter
+        if (doc != null && doc.isDocumentReady) {
+            syncToList(lines.size)
+            stateReadyUpTo = target
+            return stateReadyUpTo
+        }
         syncToList(lines.size)
 
         var prevState: HighlightState? =
@@ -405,7 +452,7 @@ class HighlightCache(
         var i = fromIndex
         while (i < end) {
             if (gen != expectedGen) return null
-            val (tokens, newState) = safeTokenize(lines[i], prevState)
+            val (tokens, newState) = lineTokens(i, lines[i], prevState)
             val sorted = tokens.sortedBy { it.start }
             setTokens(i, sorted)
             lineStates[i] = newState
@@ -497,7 +544,7 @@ class HighlightCache(
                 i++
                 continue
             }
-            val (tokens, newState) = safeTokenize(lines[i], prevState)
+            val (tokens, newState) = lineTokens(i, lines[i], prevState)
             val sorted = tokens.sortedBy { it.start }
             setTokens(i, sorted)
             lineStates[i] = newState
@@ -553,14 +600,14 @@ class HighlightCache(
         var prevState: HighlightState? = highlighter.initial()
         for (i in hStart until startLine) {
             if (gen != expectedGen) return
-            val (_, newState) = safeTokenize(lines[i], prevState)
+            val (_, newState) = lineTokens(i, lines[i], prevState)
             prevState = newState
         }
         syncToList(lines.size)
         var wrote = false
         for (i in startLine until endLine) {
             if (gen != expectedGen) return
-            val (tokens, newState) = safeTokenize(lines[i], prevState)
+            val (tokens, newState) = lineTokens(i, lines[i], prevState)
             val sorted = tokens.sortedBy { it.start }
             lruTokens[i] = sorted
             if (i in sortedLineTokens.indices) {
@@ -587,6 +634,12 @@ class HighlightCache(
     fun getCacheSize(): Int = lruTokens.size
 
     fun getStateReadyUpTo(): Int = stateReadyUpTo
+
+    /**
+     * 文档级高亮（Tree-sitter）是否已整篇解析完成；逐行高亮器恒为 false。
+     * 它替代了逐行管线的「状态脊预热完成」：树解析完成后任意行都能立刻取到 token。
+     */
+    fun isDocumentReady(): Boolean = (highlighter as? DocumentSyntaxHighlighter)?.isDocumentReady == true
 
     fun clearLruCache() {
         lruTokens.clear()

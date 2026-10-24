@@ -38,6 +38,7 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlin.random.Random
 import kotlin.test.assertNull
@@ -1716,9 +1717,11 @@ class NativeCodeEditorTest {
     @Test
     fun singleThread_typingAndSwitchingDoesNotCrash() =
         runTest {
-            Dispatchers.setMain(UnconfinedTestDispatcher())
+            // 后台调度器注入测试调度器：解析任务随 advanceUntilIdle 确定性跑完，
+            // 不会在 resetMain 之后恢复而撞上「Main dispatcher 缺失」（污染后续测试）
+            Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
             try {
-                val vm = NativeEditorViewModel()
+                val vm = NativeEditorViewModel(defaultDispatcher = StandardTestDispatcher(testScheduler))
                 vm.onEvent(NativeEditorEvent.ContentChanged(javaSample))
                 vm.onEvent(NativeEditorEvent.LanguageChanged(EditorLanguage.Java))
                 advanceUntilIdle()

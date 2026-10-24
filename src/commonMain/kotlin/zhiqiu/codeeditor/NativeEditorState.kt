@@ -53,6 +53,13 @@ data class NativeEditorState(
     val isModified: Boolean = false,
     // 加载/保存时的基线内容：用于精确判断当前内容是否相对已保存文件发生改动
     val originalText: String = "",
+    /**
+     * 基线内容的总字符数（含行分隔符），与 [baselineDigest] 一起构成 isModified 的 O(1) 预判：
+     * 两者与当前内容不一致即已改动，省掉每次编辑整篇拼接/比对。
+     */
+    val baselineLength: Int = 0,
+    /** 基线内容摘要（字符多集散列，见 `ILineBuffer.contentDigest`）。 */
+    val baselineDigest: Long = 0L,
     val fontSize: Int = 14,
     val tabSize: Int = 4,
     val isWordWrap: Boolean = false,

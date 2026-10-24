@@ -1774,8 +1774,9 @@ class NativeEditorViewModelTest {
             assertFalse(viewModel.state.value.performanceMode.eagerFullHighlight)
             // 后台只预热状态脊，不写全文 token
             assertTrue(
-                viewModel.highlightCache.getStateReadyUpTo() >= 12_000,
-                "PERFORMANCE 应预热完整状态脊",
+                viewModel.highlightCache.isDocumentReady() ||
+                    viewModel.highlightCache.getStateReadyUpTo() >= 12_000,
+                "PERFORMANCE 应完成后台整篇预热（树解析或状态脊）",
             )
             assertTrue(
                 viewModel.highlightCache.getTokens(5_000).isEmpty(),
@@ -1826,8 +1827,9 @@ class NativeEditorViewModelTest {
             assertFalse(viewModel.state.value.performanceMode.eagerFullHighlight)
             assertFalse(viewModel.state.value.performanceMode.enableSearch)
             assertTrue(
-                viewModel.highlightCache.getStateReadyUpTo() >= 50_001,
-                "MINIMAL 也应预热状态脊，保证跳转高亮正确",
+                viewModel.highlightCache.isDocumentReady() ||
+                    viewModel.highlightCache.getStateReadyUpTo() >= 50_001,
+                "MINIMAL 也应完成后台预热（树解析或状态脊），保证跳转高亮正确",
             )
             val gen = viewModel.highlightCache.generation
             val lines = viewModel.state.value.content.getLines()

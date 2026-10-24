@@ -269,9 +269,6 @@ private val SELECTION_HANDLE_COLOR = Color(0xFF2196F3)
 /** 触发全文件最宽行测量的最大行数；超过则回退按最长行×字符宽估算，避免测量开销。 */
 private const val MAX_LINES_FOR_MEASURE_WIDTH = 20_000
 
-/** 临时 on-device 诊断开关：定位「超长行滚不到行尾/点击跳回第一屏」。验收后必须删除。 */
-private const val DEBUG_SUPERLONG = false
-
 /** 最宽行之外再预留的字符数（光标/手柄/末尾可读性）。 */
 private const val CONTENT_END_PADDING_CHARS = 4
 
@@ -599,12 +596,6 @@ fun NativeCodeEditor(
                 maxWidthTracker.estimate(lines, cellWidthPx, wideCharWidthPx)
             val estimatePx = estimated.widthPx
             val maxLen = estimated.maxLen
-            if (DEBUG_SUPERLONG) {
-                println(
-                    "NATIVE-WIDTH maxLen=$maxLen cell=$cellWidthPx wide=$wideCharWidthPx " +
-                        "estimatePx=$estimatePx lines=${lines.size}",
-                )
-            }
             val trueMaxPx: Float =
                 if (measureMaxWidth && estimatePx < MAX_CONSTRAINT_WIDTH_PX && lines.size <= 200) {
                     // 精确 measure 仅小文件；大文件用增量估算即可
@@ -2838,13 +2829,6 @@ private fun InputLayer(
             val targetPx =
                 (targetCols * charWidthPx).roundToInt().coerceIn(0, horizontalScrollState.maxValue)
             if (horizontalScrollState.value != targetPx) {
-                if (DEBUG_SUPERLONG) {
-                    println(
-                        "NATIVE-REVEAL cursor=$cursorColumn scrollCols=$scrollCols " +
-                            "windowEnd=$windowEnd -> scrollTo(target=$targetPx, col=$targetCols) " +
-                            "cur=${horizontalScrollState.value}",
-                    )
-                }
                 runCatching { horizontalScrollState.scrollTo(targetPx) }
             }
         }
@@ -3004,16 +2988,6 @@ private fun InputLayer(
                                                 globalCol,
                                             )
                                             focusRequester.requestFocus()
-                                            if (DEBUG_SUPERLONG) {
-                                                println(
-                                                    "NATIVECLICK offset=${offset.x.roundToInt()} " +
-                                                        "cw=$cw wrap=$latestIsWordWrapState " +
-                                                        "winStart=$latestWinStart " +
-                                                        "globalCol=$globalCol scroll=" +
-                                                        "${horizontalScrollState.value}/" +
-                                                        "${horizontalScrollState.maxValue}",
-                                                )
-                                            }
                                         }
                                     }
                                     break
