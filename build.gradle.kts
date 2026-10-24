@@ -48,11 +48,46 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.okio)
         }
+        jvmMain.dependencies {
+            // 桌面（JVM）tree-sitter：官方 ktreesitter 绑定 + 16 个语法包。加载失败自动回退正则高亮。
+            implementation(libs.ktreesitter)
+            implementation(libs.treesitter.languages.java)
+            implementation(libs.treesitter.languages.kotlin)
+            implementation(libs.treesitter.languages.xml)
+            implementation(libs.treesitter.languages.toml)
+            implementation(libs.treesitter.languages.yaml)
+            implementation(libs.treesitter.languages.json)
+            implementation(libs.treesitter.languages.python)
+            implementation(libs.treesitter.languages.javascript)
+            implementation(libs.treesitter.languages.typescript)
+            implementation(libs.treesitter.languages.html)
+            implementation(libs.treesitter.languages.css)
+            implementation(libs.treesitter.languages.c)
+            implementation(libs.treesitter.languages.cpp)
+            implementation(libs.treesitter.languages.go)
+            implementation(libs.treesitter.languages.rust)
+            implementation(libs.treesitter.languages.bash)
+        }
+        androidMain.dependencies {
+            // Android tree-sitter：AndroidIDE 的 C 绑定（无 Java record，可正常打包）+ 其已发版的
+            // 7 个语法包。仅 AndroidIDE 发了版的语言走真解析，其余语言由调用方回退正则高亮。
+            // ktreesitter 的 Android 变体带 record，AGP 9 的 D8 脱糖会让 APK 构建失败，故 Android 不用它。
+            implementation(libs.android.tree.sitter)
+            implementation(libs.android.ts.kotlin)
+            implementation(libs.android.ts.java)
+            implementation(libs.android.ts.json)
+            implementation(libs.android.ts.xml)
+            implementation(libs.android.ts.python)
+            implementation(libs.android.ts.c)
+            implementation(libs.android.ts.cpp)
+        }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.kotlinx.coroutines.test)
         }
         jvmTest.dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.kotlinx.coroutines.test)
             implementation(libs.compose.ui.test)
         }
         // Compose 桌面 UI 测试（jvmTest）需要 Skiko 原生运行时加载 .dylib/.so，

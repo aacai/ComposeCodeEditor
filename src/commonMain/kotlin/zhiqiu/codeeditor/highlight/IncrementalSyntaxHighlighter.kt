@@ -23,26 +23,12 @@ class RegexIncrementalHighlighter(
     override fun initial(): HighlightState = inner.initial()
 }
 
-/**
- * Tree-sitter 占位实现：当前委托正则。
- * 接入原生/WASM Tree-sitter 时只改此类，不必动编辑器管线。
- */
-class TreeSitterSyntaxHighlighter(
-    language: EditorLanguage,
-) : IncrementalSyntaxHighlighter {
-    private val fallback = RegexIncrementalHighlighter(createSyntaxHighlighter(language))
-
-    override fun tokenize(
-        line: String,
-        prevState: HighlightState?,
-    ): Pair<List<Token>, HighlightState> = fallback.tokenize(line, prevState)
-
-    override fun initial(): HighlightState = fallback.initial()
-
-    override fun invalForEdit(delta: EditDelta): InvalLines = fallback.invalForEdit(delta)
-}
-
 object IncrementalHighlighterProvider : SyntaxHighlighterProvider {
-    override fun create(language: EditorLanguage): SyntaxHighlighter =
-        TreeSitterSyntaxHighlighter(language)
+    override fun create(language: EditorLanguage): SyntaxHighlighter {
+        // 桌面返回真 Tree-sitter 高亮器；Android 暂无（ktreesitter 含 record 导致 APK
+        // 构建失败）返回 null，这里回退逐行正则高亮，编辑器行为不变。
+        val ts = createTreeSitterHighlighter(language)
+        if (ts != null) return ts
+        return RegexIncrementalHighlighter(createSyntaxHighlighter(language))
+    }
 }
