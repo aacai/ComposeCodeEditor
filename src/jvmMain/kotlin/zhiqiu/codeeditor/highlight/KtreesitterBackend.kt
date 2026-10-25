@@ -16,6 +16,7 @@ import cn.enaium.treesitter.languages.toml.TreeSitterToml
 import cn.enaium.treesitter.languages.typescript.TreeSitterTypescript
 import cn.enaium.treesitter.languages.xml.TreeSitterXml
 import cn.enaium.treesitter.languages.yaml.TreeSitterYaml
+import io.github.treesitter.ktreesitter.InputEdit
 import io.github.treesitter.ktreesitter.InputEncoding
 import io.github.treesitter.ktreesitter.Language
 import io.github.treesitter.ktreesitter.Node
@@ -99,7 +100,34 @@ object KtreesitterBackend : TsBackend {
     private class KtTree(
         private val t: Tree,
     ) : TsTree {
+        /** 暴露底层原生 Tree 供增量解析复用（仅本 object 内可见）。 */
+        val native: Tree get() = t
+
         override fun rootNode() = KtNode(t.rootNode)
+
+        override fun edit(
+            oldText: String,
+            newText: String,
+            edit: TsEdit,
+        ) {
+            // ktreesitter 以 UTF-8 字节计偏移/列，需把字符层编辑换算成字节层
+            val startByte = utf8BytesUpTo(oldText, edit.startChar).toUInt()
+            val oldEndByte = utf8BytesUpTo(oldText, edit.oldEndChar).toUInt()
+            val newEndByte = utf8BytesUpTo(newText, edit.newEndChar).toUInt()
+            val startCol = utf8ColAt(oldText, edit.startChar).toUInt()
+            val oldEndCol = utf8ColAt(oldText, edit.oldEndChar).toUInt()
+            val newEndCol = utf8ColAt(newText, edit.newEndChar).toUInt()
+            t.edit(
+                InputEdit(
+                    startByte,
+                    oldEndByte,
+                    newEndByte,
+                    Point(edit.startPoint.row.toUInt(), startCol),
+                    Point(edit.oldEndPoint.row.toUInt(), oldEndCol),
+                    Point(edit.newEndPoint.row.toUInt(), newEndCol),
+                ),
+            )
+        }
 
         override fun close() {
             // ktreesitter 的 Tree 由库内部 RefCleaner 随 GC 释放，无 close()
@@ -109,9 +137,12 @@ object KtreesitterBackend : TsBackend {
     private class KtParser(
         private val p: Parser,
     ) : TsParser {
-        override fun parse(text: String): TsTree? =
+        override fun parse(
+            text: String,
+            oldTree: TsTree?,
+        ): TsTree? =
             try {
-                val tree = p.parse(text, InputEncoding.UTF_8) ?: return null
+                val tree = p.parse(text, InputEncoding.UTF_8, (oldTree as? KtTree)?.native)
                 KtTree(tree)
             } catch (t: Throwable) {
                 null
@@ -126,6 +157,26 @@ object KtreesitterBackend : TsBackend {
      * 行内 UTF-8 字节偏移 → 字符列的换算表（tree-sitter 按 UTF-8 字节计列，
      * 编辑器的 [Token] 列是 String 下标）。纯 ASCII 行不建表，恒等换算。
      */
+    /**
+     * 字符下标 → UTF-8 字节数（取前缀的 UTF-8 编码长度）。增量编辑的偏移/列换算用。
+     */
+    private fun utf8BytesUpTo(text: String, charIdx: Int): Int =
+        if (charIdx <= 0) 0 else text.take(charIdx).encodeToByteArray().size
+
+    /**
+     * 字符下标 → 行内 UTF-8 字节列：字符下标所在行首到该下标的 UTF-8 长度。
+     */
+    private fun utf8ColAt(text: String, charIdx: Int): Int {
+        var lineStart = 0
+        for (i in charIdx - 1 downTo 0) {
+            if (text[i] == '\n') {
+                lineStart = i + 1
+                break
+            }
+        }
+        return utf8BytesUpTo(text, charIdx) - utf8BytesUpTo(text, lineStart)
+    }
+
     private class ByteColumnMap(
         line: String,
     ) {

@@ -164,4 +164,37 @@ class TreeSitterSyntaxHighlighterTest {
             val painted = assertNotNull(cache.getTokens(1))
             assertTrue(painted.any { it.type == TokenType.String }, "视口应按文档级 token 上色: $painted")
         }
+
+    @Test
+    fun incrementalParseReusesTreeAcrossEdits() =
+        runTest {
+            val highlighter = ts(EditorLanguage.Kotlin)
+            assertTrue(highlighter.parseDocument(listOf("val a = 1")))
+            val num1 = assertNotNull(highlighter.tokensForLine(0)).single { it.type == TokenType.Number }
+            assertEquals(8, num1.start)
+            assertEquals(9, num1.end, "数字应覆盖 \"1\"")
+
+            // 行尾追加两位：复用 oldTree 走增量解析，数字覆盖 \"123\"
+            assertTrue(highlighter.parseDocument(listOf("val a = 123")))
+            val num2 = assertNotNull(highlighter.tokensForLine(0)).single { it.type == TokenType.Number }
+            assertEquals(8, num2.start)
+            assertEquals(11, num2.end, "数字应覆盖 \"123\"")
+
+            // 缩减也走增量解析，结果正确
+            assertTrue(highlighter.parseDocument(listOf("val a = 7")))
+            val num3 = assertNotNull(highlighter.tokensForLine(0)).single { it.type == TokenType.Number }
+            assertEquals(8, num3.start)
+            assertEquals(9, num3.end, "数字应覆盖 \"7\"")
+
+            // 中间插入多行：跨行增量编辑不崩、结论正确
+            assertTrue(
+                highlighter.parseDocument(
+                    listOf("fun main() {", "    val a = 7", "}", "/* 多行", "   注释 */", "val b = 2"),
+                ),
+            )
+            assertTrue(
+                assertNotNull(highlighter.tokensForLine(5)).any { it.type == TokenType.Number },
+                "中间插入行后增量解析应正确识别 val b = 2 的数字",
+            )
+        }
 }

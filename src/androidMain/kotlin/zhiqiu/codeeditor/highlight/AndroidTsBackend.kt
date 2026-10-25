@@ -2,6 +2,7 @@ package zhiqiu.codeeditor.highlight
 
 import com.itsaky.androidide.treesitter.TSParser
 import com.itsaky.androidide.treesitter.TSLanguage
+import com.itsaky.androidide.treesitter.TSInputEdit
 import com.itsaky.androidide.treesitter.TSNode
 import com.itsaky.androidide.treesitter.TSPoint
 import com.itsaky.androidide.treesitter.TSTree
@@ -96,7 +97,28 @@ object AndroidTsBackend : TsBackend {
     private class AndroidTree(
         private val t: TSTree,
     ) : TsTree {
+        /** 暴露底层原生 TSTree 供增量解析复用（仅本 object 内可见）。 */
+        val native: TSTree get() = t
+
         override fun rootNode() = AndroidNode(t.rootNode)
+
+        override fun edit(
+            oldText: String,
+            newText: String,
+            edit: TsEdit,
+        ) {
+            // AndroidIDE 内部以 UTF-16（码元=字符）为单位，字符偏移/列直接复用，无需换算
+            t.edit(
+                TSInputEdit.create(
+                    edit.startChar,
+                    edit.oldEndChar,
+                    edit.newEndChar,
+                    TSPoint.create(edit.startPoint.row, edit.startPoint.column),
+                    TSPoint.create(edit.oldEndPoint.row, edit.oldEndPoint.column),
+                    TSPoint.create(edit.newEndPoint.row, edit.newEndPoint.column),
+                ),
+            )
+        }
 
         override fun close() {
             t.close()
@@ -106,9 +128,12 @@ object AndroidTsBackend : TsBackend {
     private class AndroidParser(
         private val p: TSParser,
     ) : TsParser {
-        override fun parse(text: String): TsTree? =
+        override fun parse(
+            text: String,
+            oldTree: TsTree?,
+        ): TsTree? =
             try {
-                val tree = p.parseString(null, text) ?: return null
+                val tree = p.parseString((oldTree as? AndroidTree)?.native, text) ?: return null
                 AndroidTree(tree)
             } catch (t: Throwable) {
                 null

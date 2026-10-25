@@ -27,15 +27,44 @@ interface TsNode {
     val parent: TsNode?
 }
 
+/**
+ * 字符层面的编辑描述（由高亮器按公共前后缀差算出），后端再换算成原生单位
+ * （ktreesitter 用 UTF-8 字节；AndroidIDE 用 UTF-16 码元=字符）。
+ */
+data class TsEdit(
+    val startChar: Int,
+    val oldEndChar: Int,
+    val newEndChar: Int,
+    val startPoint: TsPoint,
+    val oldEndPoint: TsPoint,
+    val newEndPoint: TsPoint,
+)
+
 interface TsTree {
     fun rootNode(): TsNode
+
+    /**
+     * 把上一次解析的旧树同步到「源码已被修改」的状态，供下次增量 parse 复用。
+     * [oldText]/[newText] 用于后端把字符偏移换算成原生单位。
+     */
+    fun edit(
+        oldText: String,
+        newText: String,
+        edit: TsEdit,
+    )
 
     fun close()
 }
 
 interface TsParser {
-    /** 解析整篇文本；返回 null 表示失败（缺 grammar / ABI 不兼容 / 解析抛错）。 */
-    fun parse(text: String): TsTree?
+    /**
+     * 解析整篇文本；[oldTree] 非 null 时做增量解析（需先对其调用 [TsTree.edit]）。
+     * 返回 null 表示失败（缺 grammar / ABI 不兼容 / 解析抛错）。
+     */
+    fun parse(
+        text: String,
+        oldTree: TsTree? = null,
+    ): TsTree?
 
     fun close()
 }

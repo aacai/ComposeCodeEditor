@@ -39,6 +39,13 @@ class TreeSitterSyntaxHighlighter(
     override var isDocumentReady: Boolean = false
         private set
 
+    /** 上一次解析的全文与语法树，用于增量复用（避免每键整篇重解析）。 */
+    @Volatile
+    private var oldText: String? = null
+
+    @Volatile
+    private var oldTree: TsTree? = null
+
     // ------------------------------------------------------------ 逐行接口（回退路）
 
     override fun tokenize(
@@ -67,22 +74,40 @@ class TreeSitterSyntaxHighlighter(
         val p = parser ?: return false
         val text = lines.joinToString("\n")
         return parseMutex.withLock {
-            val tree: TsTree =
+            // 文本未变且已有结论：直接复用，避免无谓重解析
+            if (oldText == text && oldTree != null) return@withLock isDocumentReady
+
+            val prevTree = oldTree
+            val newTree: TsTree =
                 try {
-                    p.parse(text) ?: return@withLock false
+                    val edit = if (oldText != null && prevTree != null) computeEdit(oldText!!, text) else null
+                    if (edit != null) prevTree!!.edit(oldText!!, text, edit)
+                    val t =
+                        p.parse(text, prevTree) ?: run {
+                            prevTree?.close()
+                            oldTree = null
+                            oldText = null
+                            return@withLock false
+                        }
+                    // 旧树已被消费，释放（ktreesitter 由 GC 回收；AndroidIDE 需显式 close）
+                    prevTree?.close()
+                    oldTree = t
+                    oldText = text
+                    t
                 } catch (t: Throwable) {
+                    prevTree?.close()
+                    oldTree = null
+                    oldText = null
                     return@withLock false
                 }
             try {
-                val tokens = buildLineTokens(tree, lines)
+                val tokens = buildLineTokens(newTree, lines)
                 // 先整体备好再发布：主线程要么读到旧版完整结论，要么读到新版
                 lineTokens = tokens
                 isDocumentReady = true
                 true
             } catch (t: Throwable) {
                 false
-            } finally {
-                tree.close()
             }
         }
     }
@@ -119,6 +144,51 @@ class TreeSitterSyntaxHighlighter(
             }
         }
     }
+
+    /**
+     * 由旧/新全文算出单次增量编辑（公共前缀 + 公共后缀之间的那段）。
+     * 返回字符层面的 [TsEdit]；文本未变返回 null。
+     */
+    private fun computeEdit(oldText: String, newText: String): TsEdit? {
+        if (oldText == newText) return null
+        val n = minOf(oldText.length, newText.length)
+        var prefix = 0
+        while (prefix < n && oldText[prefix] == newText[prefix]) prefix++
+        var suffix = 0
+        while (suffix < n - prefix &&
+            oldText[oldText.length - 1 - suffix] == newText[newText.length - 1 - suffix]
+        ) {
+            suffix++
+        }
+        return TsEdit(
+            startChar = prefix,
+            oldEndChar = oldText.length - suffix,
+            newEndChar = newText.length - suffix,
+            startPoint = pointAt(oldText, prefix),
+            oldEndPoint = pointAt(oldText, oldText.length - suffix),
+            newEndPoint = pointAt(newText, newText.length - suffix),
+        )
+    }
+
+    /** 字符下标 → 字符层面的行列号（tree-sitter 的 start/end 点）。 */
+    private fun pointAt(text: String, offset: Int): TsPoint {
+        var row = 0
+        var col = 0
+        for (i in 0 until offset) {
+            if (text[i] == '\n') {
+                row++
+                col = 0
+            } else {
+                col++
+            }
+        }
+        return CharPoint(row, col)
+    }
+
+    private data class CharPoint(
+        override val row: Int,
+        override val column: Int,
+    ) : TsPoint
 
     /** 跨行节点（块注释、多行字符串）按行拆成多个 token。 */
     private fun emit(
