@@ -78,10 +78,11 @@ class TreeSitterSyntaxHighlighter(
             if (oldText == text && oldTree != null) return@withLock isDocumentReady
 
             val prevTree = oldTree
+            val prevText = oldText
+            val edit = if (prevText != null && prevTree != null) computeEdit(prevText, text) else null
             val newTree: TsTree =
                 try {
-                    val edit = if (oldText != null && prevTree != null) computeEdit(oldText!!, text) else null
-                    if (edit != null) prevTree!!.edit(oldText!!, text, edit)
+                    if (edit != null) prevTree!!.edit(prevText!!, text, edit)
                     val t =
                         p.parse(text, prevTree) ?: run {
                             prevTree?.close()
@@ -101,7 +102,13 @@ class TreeSitterSyntaxHighlighter(
                     return@withLock false
                 }
             try {
-                val tokens = buildLineTokens(newTree, lines)
+                // 有旧结论则按脏行带剪枝增量刷新，否则全量重建（首解析 / 旧树失效回退）
+                val tokens =
+                    if (edit != null && lineTokens.isNotEmpty()) {
+                        rebuildDirtyRows(lines, newTree, edit, lineTokens)
+                    } else {
+                        buildLineTokens(newTree, lines)
+                    }
                 // 先整体备好再发布：主线程要么读到旧版完整结论，要么读到新版
                 lineTokens = tokens
                 isDocumentReady = true
@@ -130,6 +137,67 @@ class TreeSitterSyntaxHighlighter(
             }
         }
         return perLine.map { row -> row.sortedBy { it.start } }
+    }
+
+    /**
+     * 剪枝遍历：只下钻与脏行带 [dirtyMin, dirtyMax] 相交的节点，整段落在带外的子树直接跳过
+     * （子节点不可能在脏行产生 token）。增量刷新时避免 walk 整棵树。
+     */
+    private fun walkPruned(
+        node: TsNode,
+        dirtyMin: Int,
+        dirtyMax: Int,
+        onNode: (TsNode) -> Boolean,
+    ) {
+        val startRow = node.startPoint.row
+        val endRow = node.endPoint.row
+        // 整节点都在脏行带之外：直接跳过其整棵子树
+        if (endRow < dirtyMin || startRow > dirtyMax) return
+        val descend = onNode(node)
+        if (descend) {
+            for (i in 0 until node.childCount) {
+                node.child(i)?.let { walkPruned(it, dirtyMin, dirtyMax, onNode) }
+            }
+        }
+    }
+
+    /**
+     * 增量刷新：仅重建脏行带 [edit.startPoint.row, edit.newEndPoint.row] 内的 token，其余行复用旧 token。
+     * 非脏行可能因增删行整体平移，按 [edit] 的行列差把旧 token 贴到新行号（token 列是行内相对列，平移安全）。
+     * 结果与全量重建一致。
+     */
+    private fun rebuildDirtyRows(
+        lines: List<String>,
+        tree: TsTree,
+        edit: TsEdit,
+        oldLineTokens: List<List<Token>>,
+    ): List<List<Token>> {
+        val newStartRow = edit.startPoint.row
+        val newEndRow = edit.newEndPoint.row
+        val delta = newEndRow - edit.oldEndPoint.row
+        val band = newStartRow..newEndRow
+        val perLine = ArrayList<MutableList<Token>>(lines.size)
+        for (r in 0 until lines.size) {
+            perLine.add(
+                if (r in band) {
+                    ArrayList()
+                } else {
+                    @Suppress("UNCHECKED_CAST")
+                    (oldLineTokens.getOrNull(if (r < newStartRow) r else r - delta) ?: ArrayList<Token>()) as MutableList<Token>
+                },
+            )
+        }
+        walkPruned(tree.rootNode(), newStartRow, newEndRow) { node ->
+            val tokenType = tokenTypeFor(node)
+            if (tokenType == null) {
+                true
+            } else {
+                emit(perLine, lines, node, tokenType, band)
+                false
+            }
+        }
+        // 仅脏行重新排序；非脏行复用旧 token 列表（保持引用，不重新分配）
+        return perLine.mapIndexed { r, row -> if (r in band) row.sortedBy { it.start } else row }
     }
 
     /** 深度优先（先序）遍历语法树，[onNode] 返回是否继续下钻该节点的子节点。 */
@@ -190,18 +258,20 @@ class TreeSitterSyntaxHighlighter(
         override val column: Int,
     ) : TsPoint
 
-    /** 跨行节点（块注释、多行字符串）按行拆成多个 token。 */
+    /** 跨行节点（块注释、多行字符串）按行拆成多个 token。[band] 非空时只写落在脏行带内的行。 */
     private fun emit(
-        perLine: List<ArrayList<Token>>,
+        perLine: List<MutableList<Token>>,
         lines: List<String>,
         node: TsNode,
         type: TokenType,
+        band: IntRange? = null,
     ) {
         if (perLine.isEmpty()) return
         val startRow = node.startPoint.row
         if (startRow >= perLine.size) return
         val endRow = minOf(node.endPoint.row, perLine.lastIndex)
         for (row in startRow..endRow) {
+            if (band != null && row !in band) continue
             val from = if (row == startRow) backend.columnToChar(lines[row], node.startPoint.column) else 0
             val to = if (row == endRow) backend.columnToChar(lines[row], node.endPoint.column) else lines[row].length
             if (to > from) perLine[row].add(Token(from, to, type))

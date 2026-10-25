@@ -197,4 +197,30 @@ class TreeSitterSyntaxHighlighterTest {
                 "中间插入行后增量解析应正确识别 val b = 2 的数字",
             )
         }
+
+    @Test
+    fun incrementalLocalRefreshMatchesFullReparse() =
+        runTest {
+            val initial = listOf("fun main() {", "    val a = 1", "    val b = \"hello\"", "}")
+            // 增量：先在 initial 上建树，再编辑（走剪枝局部刷新）
+            val inc = ts(EditorLanguage.Kotlin)
+            assertTrue(inc.parseDocument(initial))
+            val edited = listOf("fun main() {", "    val a = 12345", "    val b = \"hello world\"", "}")
+            assertTrue(inc.parseDocument(edited))
+            // 对照：另一条 highlighter 对 edited 全量重建
+            val fullEdited = ts(EditorLanguage.Kotlin)
+            assertTrue(fullEdited.parseDocument(edited))
+            for (i in edited.indices) {
+                assertEquals(fullEdited.tokensForLine(i), inc.tokensForLine(i), "编辑后第 $i 行增量刷新应与全量重建一致")
+            }
+
+            // 中间插入一行：验证行号平移映射（旧 token 贴到新行号）
+            val inserted = listOf("fun main() {", "    val x = 9", "    val a = 12345", "    val b = \"hello world\"", "}")
+            assertTrue(inc.parseDocument(inserted))
+            val fullIns = ts(EditorLanguage.Kotlin)
+            assertTrue(fullIns.parseDocument(inserted))
+            for (i in inserted.indices) {
+                assertEquals(fullIns.tokensForLine(i), inc.tokensForLine(i), "插入行后第 $i 行应与全量重建一致")
+            }
+        }
 }
