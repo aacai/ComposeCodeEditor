@@ -48,7 +48,12 @@ class LineBuffer(
         val before = lines.size
         lines.insertLine(index, line)
         stats.onLineInserted(line, before)
-        clearCache()
+        val cache = cachedList
+        if (cache is MutableList) {
+            cache.add(index.coerceIn(0, cache.size), line)
+        } else {
+            clearCache()
+        }
     }
 
     override fun deleteLine(index: Int) {
@@ -57,12 +62,23 @@ class LineBuffer(
             val before = lines.size
             lines.deleteLine(index)
             stats.onLineDeleted(old, before)
+            val cache = cachedList
+            if (cache is MutableList && index in cache.indices) {
+                cache.removeAt(index)
+            } else {
+                clearCache()
+            }
         } else {
             val old = lines.getLine(0)
             lines.setLine(0, "")
             stats.onLineReplaced(old, "")
+            val cache = cachedList
+            if (cache is MutableList && cache.isNotEmpty()) {
+                cache[0] = ""
+            } else {
+                clearCache()
+            }
         }
-        clearCache()
     }
 
     override fun setLine(
@@ -73,7 +89,13 @@ class LineBuffer(
             val old = lines.getLine(index)
             lines.setLine(index, text)
             stats.onLineReplaced(old, text)
-            clearCache()
+            // 单行替换只改缓存槽，避免每次按键整表 getLines
+            val cache = cachedList
+            if (cache is MutableList && index in cache.indices) {
+                cache[index] = text
+            } else {
+                clearCache()
+            }
         }
     }
 

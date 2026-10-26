@@ -444,13 +444,20 @@ class PieceTreeLineBuffer(
     text: String = "",
 ) : ILineBuffer {
     private val tree = PieceTreeBuffer(text)
+    private var cachedList: MutableList<String>? = null
 
     override val lineCount: Int
         get() = tree.getLineCount()
 
-    override fun getLine(index: Int): String = tree.getLine(index)
+    override fun getLine(index: Int): String =
+        cachedList?.getOrNull(index) ?: tree.getLine(index)
 
-    override fun getLines(): List<String> = tree.getLines()
+    override fun getLines(): List<String> {
+        cachedList?.let { return it }
+        val fresh = tree.getLines().toMutableList()
+        cachedList = fresh
+        return fresh
+    }
 
     override fun getLength(): Int = tree.getLength()
 
@@ -466,12 +473,20 @@ class PieceTreeLineBuffer(
             index == 0 -> tree.insert(0, "$line\n")
             else -> tree.insert(lineOffset(index), "$line\n")
         }
+        val cache = cachedList
+        if (cache != null) {
+            cache.add(index.coerceIn(0, cache.size), line)
+        }
     }
 
     override fun deleteLine(index: Int) {
         if (lineCount <= 0 || index !in 0 until lineCount) return
         if (lineCount == 1) {
             tree.replaceAll("")
+            cachedList?.let {
+                it.clear()
+                it.add("")
+            }
             return
         }
         val start = lineOffset(index)
@@ -488,6 +503,7 @@ class PieceTreeLineBuffer(
             count += 1
         }
         tree.delete(from, count)
+        cachedList?.takeIf { index in it.indices }?.removeAt(index)
     }
 
     override fun setLine(
@@ -496,18 +512,27 @@ class PieceTreeLineBuffer(
     ) {
         if (index !in 0 until lineCount) return
         val start = lineOffset(index)
-        val old = getLine(index)
-        tree.delete(start, old.length)
-        tree.insert(start, text)
+        val nextStart =
+            if (index + 1 < lineCount) {
+                lineOffset(index + 1) - 1 // 去掉行尾 \n
+            } else {
+                tree.getLength()
+            }
+        val oldLen = (nextStart - start).coerceAtLeast(0)
+        tree.replace(start, oldLen, text)
+        cachedList?.takeIf { index in it.indices }?.set(index, text)
     }
 
     override fun replaceAll(text: String) {
         tree.replaceAll(text)
+        cachedList = null
     }
 
     override fun getText(): String = tree.getText()
 
-    override fun clearCache() {}
+    override fun clearCache() {
+        cachedList = null
+    }
 
     override fun estimateMemoryUsage(): Long = tree.getLength() * 2L
 
