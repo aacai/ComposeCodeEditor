@@ -4,6 +4,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import zhiqiu.codeeditor.text.EditDelta
 import zhiqiu.codeeditor.text.FoldRegion
 import zhiqiu.codeeditor.text.LineSeparator
 import zhiqiu.codeeditor.buffer.ILineBuffer
@@ -104,6 +105,11 @@ data class NativeEditorState(
      * UI 用它刷新行快照；与 [highlightVersion] 分离，避免渐进高亮每次 +1 触发全量 getLines/测宽。
      */
     val contentRevision: Int = 0,
+    /**
+     * 最近一次内容编辑的行级增量；与 [contentRevision] 同步写入。
+     * UI（折行缓存等）与 ViewModel 副作用共用同一失效源；整篇替换时为 null。
+     */
+    val lastEditDelta: EditDelta? = null,
 )
 
 /**

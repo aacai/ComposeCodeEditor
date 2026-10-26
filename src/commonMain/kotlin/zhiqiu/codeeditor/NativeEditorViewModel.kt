@@ -469,6 +469,7 @@ class NativeEditorViewModel(
                 isModified = true,
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
+                lastEditDelta = null,
                 canUndo = undoManager.canUndo,
                 canRedo = undoManager.canRedo,
             )
@@ -544,18 +545,17 @@ class NativeEditorViewModel(
         spliceLinesInPlace(currentState.content, e.targetStart, e.replaceCount, e.newLines)
         val newLines = currentState.content.getLines()
         val delta = EditDelta.replaceLines(e.targetStart, e.replaceCount, e.newLines.size)
-        refreshHighlightAfterEdit(delta, newLines)
         undoManager.push(EditOp.Block(oldSlice, e.newLines, e.targetStart, e.replaceCount))
         _state.value =
             currentState.copy(
                 isModified = isModifiedAgainst(currentState),
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
+                lastEditDelta = delta,
                 canUndo = undoManager.canUndo,
                 canRedo = undoManager.canRedo,
             )
-        updateSearchMatchesAfterDelta(delta, newLines)
-        scheduleFoldRefresh()
+        afterEditDelta(delta, newLines)
     }
 
     /** 局部失效高亮；文档级（Tree-sitter）必重解析，逐行模式脊未满才 warm。 */
@@ -572,6 +572,21 @@ class NativeEditorViewModel(
         if (highlightCache.getStateReadyUpTo() < lines.size) {
             startIncrementalHighlight(lines)
         }
+    }
+
+    /**
+     * 编辑后唯一副作用总线：高亮 → 搜索命中 → 可选折叠。
+     * 必须在 [NativeEditorState.contentRevision] / [NativeEditorState.lastEditDelta] 已写入之后调用，
+     * 这样文档级解析才能认准当前修订号（避免解析完成时被误判为过期）。
+     */
+    private fun afterEditDelta(
+        delta: EditDelta,
+        lines: List<String>,
+        refreshFolds: Boolean = true,
+    ) {
+        refreshHighlightAfterEdit(delta, lines)
+        updateSearchMatchesAfterDelta(delta, lines)
+        if (refreshFolds) scheduleFoldRefresh()
     }
 
     private fun handleLineContentChanged(
@@ -606,13 +621,13 @@ class NativeEditorViewModel(
         currentState.content.setLine(lineIndex, finalText)
         val lines = currentState.content.getLines()
         val delta = EditDelta.singleLine(lineIndex)
-        refreshHighlightAfterEdit(delta, lines)
         // 行级增量：仅记录被替换的那一行，避免每次按键存储整份文件（大文件 OOM 闪退根因）
         undoManager.push(EditOp.Single(lineIndex, oldText, finalText, replaceStart))
         var next =
             currentState.copy(
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
+                lastEditDelta = delta,
                 canUndo = undoManager.canUndo,
                 canRedo = undoManager.canRedo,
             )
@@ -638,15 +653,13 @@ class NativeEditorViewModel(
         // 是否改动按内容精确判（长度/摘要是 O(1) 快路径）：改一个字又删掉不该残留「未保存」
         next = next.copy(isModified = isModifiedAgainst(next))
         _state.value = next
-        updateSearchMatchesAfterDelta(delta, lines)
         // 括号 / import 相关改动才重算折叠，避免每个字符都扫全文件
-        if (finalText.any { it == '{' || it == '}' } ||
-            oldText.any { it == '{' || it == '}' } ||
-            finalText.trimStart().startsWith("import") ||
-            oldText.trimStart().startsWith("import")
-        ) {
-            scheduleFoldRefresh()
-        }
+        val needFolds =
+            finalText.any { it == '{' || it == '}' } ||
+                oldText.any { it == '{' || it == '}' } ||
+                finalText.trimStart().startsWith("import") ||
+                oldText.trimStart().startsWith("import")
+        afterEditDelta(delta, lines, refreshFolds = needFolds)
     }
 
     private fun handleCursorMoved(
@@ -722,7 +735,6 @@ class NativeEditorViewModel(
                 oldLineCount = 1,
                 newLineCount = 1 + split.appendedLines.size,
             )
-        refreshHighlightAfterEdit(delta, newLines)
         undoManager.push(
             EditOp.Enter(
                 lineIndex = line,
@@ -742,11 +754,11 @@ class NativeEditorViewModel(
                 isModified = true,
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
+                lastEditDelta = delta,
                 canUndo = undoManager.canUndo,
                 canRedo = undoManager.canRedo,
             )
-        updateSearchMatchesAfterDelta(delta, newLines)
-        scheduleFoldRefresh()
+        afterEditDelta(delta, newLines)
     }
 
     private fun handleLanguageChanged(language: EditorLanguage) {
@@ -1147,18 +1159,17 @@ class NativeEditorViewModel(
         currentState.content.setLine(m.line, newLine)
         val lines = currentState.content.getLines()
         val delta = EditDelta.singleLine(m.line)
-        refreshHighlightAfterEdit(delta, lines)
         undoManager.push(EditOp.Single(m.line, oldLine, newLine, start))
         val next =
             currentState.copy(
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
+                lastEditDelta = delta,
                 canUndo = undoManager.canUndo,
                 canRedo = undoManager.canRedo,
             )
         _state.value = next.copy(isModified = isModifiedAgainst(next))
-        updateSearchMatchesAfterDelta(delta, lines)
-        scheduleFoldRefresh()
+        afterEditDelta(delta, lines)
         return true
     }
 
@@ -1204,18 +1215,17 @@ class NativeEditorViewModel(
             val delta = EditDelta.replaceLines(firstLine, oldSlice.size, newSlice.size)
             spliceLinesInPlace(s.content, firstLine, oldSlice.size, newSlice)
             val splicedLines = s.content.getLines()
-            refreshHighlightAfterEdit(delta, splicedLines)
             undoManager.push(EditOp.Block(oldSlice, newSlice, firstLine, oldSlice.size))
             val next =
                 s.copy(
                     highlightVersion = s.highlightVersion + 1,
                     contentRevision = s.contentRevision + 1,
+                    lastEditDelta = delta,
                     canUndo = undoManager.canUndo,
                     canRedo = undoManager.canRedo,
                 )
             _state.value = next.copy(isModified = isModifiedAgainst(next))
-            updateSearchMatchesAfterDelta(delta, splicedLines)
-            scheduleFoldRefresh()
+            afterEditDelta(delta, splicedLines)
         }
     }
 
@@ -1250,7 +1260,6 @@ class NativeEditorViewModel(
         currentState.content.setLine(line, newText)
         val lines = currentState.content.getLines()
         val delta = EditDelta.singleLine(line)
-        refreshHighlightAfterEdit(delta, lines)
         undoManager.push(EditOp.Single(line, oldText, newText, cursor.column))
         val newColumn = (cursor.column - removed).coerceAtLeast(0)
         syncCursorNow(line, newColumn)
@@ -1261,11 +1270,11 @@ class NativeEditorViewModel(
                 isModified = true,
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
+                lastEditDelta = delta,
                 canUndo = undoManager.canUndo,
                 canRedo = undoManager.canRedo,
             )
-        updateSearchMatchesAfterDelta(delta, lines)
-        scheduleFoldRefresh()
+        afterEditDelta(delta, lines)
     }
 
     /** Esc：先收起搜索/替换面板，没有面板时清掉选区。 */
@@ -1307,12 +1316,12 @@ class NativeEditorViewModel(
                 currentState.content.setLine(op.lineIndex, op.oldText)
                 val lines = currentState.content.getLines()
                 val delta = EditDelta.singleLine(op.lineIndex)
-                refreshHighlightAfterEdit(delta, lines)
                 _state.value =
                     currentState.copy(
                         isModified = isContentModified(currentState),
                         highlightVersion = currentState.highlightVersion + 1,
-                contentRevision = currentState.contentRevision + 1,
+                        contentRevision = currentState.contentRevision + 1,
+                        lastEditDelta = delta,
                         cursorLine = op.lineIndex,
                         cursorColumn =
                             op.cursorColumn.coerceIn(
@@ -1323,7 +1332,7 @@ class NativeEditorViewModel(
                         canUndo = undoManager.canUndo,
                         canRedo = undoManager.canRedo,
                     )
-                updateSearchMatchesAfterDelta(delta, lines)
+                afterEditDelta(delta, lines)
             }
 
             is EditOp.Enter -> {
@@ -1340,12 +1349,12 @@ class NativeEditorViewModel(
                 }
                 val lines = currentState.content.getLines()
                 val delta = EditDelta.replaceLines(op.lineIndex, 1 + op.newLines.size, 1)
-                refreshHighlightAfterEdit(delta, lines)
                 _state.value =
                     currentState.copy(
                         isModified = isContentModified(currentState),
                         highlightVersion = currentState.highlightVersion + 1,
-                contentRevision = currentState.contentRevision + 1,
+                        contentRevision = currentState.contentRevision + 1,
+                        lastEditDelta = delta,
                         cursorLine = op.lineIndex,
                         cursorColumn =
                             op.oldText.length.coerceAtMost(
@@ -1355,7 +1364,7 @@ class NativeEditorViewModel(
                         canUndo = undoManager.canUndo,
                         canRedo = undoManager.canRedo,
                     )
-                updateSearchMatchesAfterDelta(delta, lines)
+                afterEditDelta(delta, lines)
             }
 
             is EditOp.ReplaceAll -> {
@@ -1373,7 +1382,8 @@ class NativeEditorViewModel(
                     currentState.copy(
                         content = newContent,
                         highlightVersion = currentState.highlightVersion + 1,
-                contentRevision = currentState.contentRevision + 1,
+                        contentRevision = currentState.contentRevision + 1,
+                        lastEditDelta = null,
                         cursorLine = cursorLine,
                         cursorColumn = cursorColumn,
                         selection = null,
@@ -1384,6 +1394,7 @@ class NativeEditorViewModel(
                 // 用恢复后的 newContent 而非撤销前旧内容，撤销回原始内容才不会残留「未保存」
                 _state.value = next.copy(isModified = isModifiedAgainst(next))
                 scheduleSearchRescan()
+                scheduleFoldRefresh()
             }
 
             is EditOp.Block -> {
@@ -1399,16 +1410,16 @@ class NativeEditorViewModel(
                 )
                 val restored = currentState.content.getLines()
                 val delta = EditDelta.replaceLines(op.targetStart, op.newLines.size, op.oldLines.size)
-                refreshHighlightAfterEdit(delta, restored)
                 _state.value =
                     currentState.copy(
                         isModified = isModifiedAgainst(currentState),
                         highlightVersion = currentState.highlightVersion + 1,
-                contentRevision = currentState.contentRevision + 1,
+                        contentRevision = currentState.contentRevision + 1,
+                        lastEditDelta = delta,
                         canUndo = undoManager.canUndo,
                         canRedo = undoManager.canRedo,
                     )
-                updateSearchMatchesAfterDelta(delta, restored)
+                afterEditDelta(delta, restored)
             }
         }
         syncCursorFromState()
@@ -1427,12 +1438,12 @@ class NativeEditorViewModel(
                 currentState.content.setLine(op.lineIndex, op.newText)
                 val lines = currentState.content.getLines()
                 val delta = EditDelta.singleLine(op.lineIndex)
-                refreshHighlightAfterEdit(delta, lines)
                 _state.value =
                     currentState.copy(
                         isModified = true,
                         highlightVersion = currentState.highlightVersion + 1,
-                contentRevision = currentState.contentRevision + 1,
+                        contentRevision = currentState.contentRevision + 1,
+                        lastEditDelta = delta,
                         cursorLine = op.lineIndex,
                         cursorColumn =
                             (op.cursorColumn + (op.newText.length - op.oldText.length))
@@ -1441,7 +1452,7 @@ class NativeEditorViewModel(
                         canUndo = undoManager.canUndo,
                         canRedo = undoManager.canRedo,
                     )
-                updateSearchMatchesAfterDelta(delta, lines)
+                afterEditDelta(delta, lines)
             }
 
             is EditOp.Enter -> {
@@ -1455,13 +1466,13 @@ class NativeEditorViewModel(
                 }
                 val lines = currentState.content.getLines()
                 val delta = EditDelta.replaceLines(op.lineIndex, 1, 1 + op.newLines.size)
-                refreshHighlightAfterEdit(delta, lines)
                 val cursorLine = op.lineIndex + op.cursorLineOffset
                 _state.value =
                     currentState.copy(
                         isModified = true,
                         highlightVersion = currentState.highlightVersion + 1,
-                contentRevision = currentState.contentRevision + 1,
+                        contentRevision = currentState.contentRevision + 1,
+                        lastEditDelta = delta,
                         cursorLine = cursorLine,
                         cursorColumn =
                             op.cursorColumn.coerceAtMost(
@@ -1471,7 +1482,7 @@ class NativeEditorViewModel(
                         canUndo = undoManager.canUndo,
                         canRedo = undoManager.canRedo,
                     )
-                updateSearchMatchesAfterDelta(delta, lines)
+                afterEditDelta(delta, lines)
             }
 
             is EditOp.ReplaceAll -> {
@@ -1489,7 +1500,8 @@ class NativeEditorViewModel(
                     currentState.copy(
                         content = newContent,
                         highlightVersion = currentState.highlightVersion + 1,
-                contentRevision = currentState.contentRevision + 1,
+                        contentRevision = currentState.contentRevision + 1,
+                        lastEditDelta = null,
                         cursorLine = cursorLine,
                         cursorColumn = cursorColumn,
                         selection = null,
@@ -1499,6 +1511,7 @@ class NativeEditorViewModel(
                 // 重做后内容整篇换过，用新内容对比基线
                 _state.value = next.copy(isModified = isModifiedAgainst(next))
                 scheduleSearchRescan()
+                scheduleFoldRefresh()
             }
 
             is EditOp.Block -> {
@@ -1514,16 +1527,16 @@ class NativeEditorViewModel(
                 )
                 val applied = currentState.content.getLines()
                 val delta = EditDelta.replaceLines(op.targetStart, op.replaceCount, op.newLines.size)
-                refreshHighlightAfterEdit(delta, applied)
                 _state.value =
                     currentState.copy(
                         isModified = isModifiedAgainst(currentState),
                         highlightVersion = currentState.highlightVersion + 1,
-                contentRevision = currentState.contentRevision + 1,
+                        contentRevision = currentState.contentRevision + 1,
+                        lastEditDelta = delta,
                         canUndo = undoManager.canUndo,
                         canRedo = undoManager.canRedo,
                     )
-                updateSearchMatchesAfterDelta(delta, applied)
+                afterEditDelta(delta, applied)
             }
         }
         syncCursorFromState()
@@ -2318,7 +2331,6 @@ class NativeEditorViewModel(
         spliceLinesInPlace(currentState.content, startLine, oldSlice.size, newSlice)
         val splicedLines = currentState.content.getLines()
         val delta = EditDelta.replaceLines(startLine, oldSlice.size, newSlice.size)
-        refreshHighlightAfterEdit(delta, splicedLines)
         undoManager.push(EditOp.Block(oldSlice, newSlice, startLine, oldSlice.size))
         selectionGestureAnchor = null
         _state.value =
@@ -2329,10 +2341,11 @@ class NativeEditorViewModel(
                 selection = null,
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
+                lastEditDelta = delta,
                 canUndo = undoManager.canUndo,
                 canRedo = undoManager.canRedo,
             )
-        updateSearchMatchesAfterDelta(delta, splicedLines)
+        afterEditDelta(delta, splicedLines)
         syncCursorFromState()
     }
 
@@ -2361,7 +2374,6 @@ class NativeEditorViewModel(
         spliceLinesInPlace(currentState.content, firstRow, oldSlice.size, newSlice)
         val splicedLines = currentState.content.getLines()
         val delta = EditDelta.replaceLines(firstRow, oldSlice.size, newSlice.size)
-        refreshHighlightAfterEdit(delta, splicedLines)
         undoManager.push(EditOp.Block(oldSlice, newSlice, firstRow, oldSlice.size))
         selectionGestureAnchor = null
         val caretLine = cursor.line.coerceIn(firstRow, lastRow)
@@ -2374,10 +2386,11 @@ class NativeEditorViewModel(
                 selection = null,
                 highlightVersion = currentState.highlightVersion + 1,
                 contentRevision = currentState.contentRevision + 1,
+                lastEditDelta = delta,
                 canUndo = undoManager.canUndo,
                 canRedo = undoManager.canRedo,
             )
-        updateSearchMatchesAfterDelta(delta, splicedLines)
+        afterEditDelta(delta, splicedLines)
         syncCursorFromState()
     }
 

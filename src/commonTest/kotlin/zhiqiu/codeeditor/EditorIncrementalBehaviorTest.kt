@@ -12,7 +12,10 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import zhiqiu.codeeditor.text.EditDelta
 
 /**
  * 增量行为回归：运行中字符数/内容摘要（isModified 快路径）、
@@ -171,5 +174,23 @@ class EditorIncrementalBehaviorTest {
             viewModel.onEvent(NativeEditorEvent.ReplaceAll)
             advanceUntilIdle()
             assertEquals(listOf("a", "b"), viewModel.state.value.content.getLines())
+        }
+
+    @Test
+    fun lastEditDeltaTracksLineEditsAndClearsOnFullReplace() =
+        runTest {
+            viewModel.loadContent("a\nb\nc", "t.txt", EditorLanguage.PlainText)
+            advanceUntilIdle()
+            assertNull(viewModel.state.value.lastEditDelta)
+
+            viewModel.onEvent(NativeEditorEvent.LineContentChanged(1, "bx"))
+            assertEquals(EditDelta.singleLine(1), viewModel.state.value.lastEditDelta)
+
+            viewModel.onEvent(NativeEditorEvent.SyncBlock(1, 0, listOf("mid")))
+            assertEquals(EditDelta.replaceLines(1, 0, 1), viewModel.state.value.lastEditDelta)
+            assertNotNull(viewModel.state.value.lastEditDelta)
+
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("z"))
+            assertNull(viewModel.state.value.lastEditDelta, "整篇替换应清空 delta，供 UI 清折行缓存")
         }
 }
