@@ -71,4 +71,12 @@ class WrapBreaksCache {
         breaksByLine.clear()
         next.forEach { line, breaks -> breaksByLine.put(line, breaks) }
     }
+
+    /** 与 [EditDelta] 对齐的失效入口（架构总线）。 */
+    fun applyDelta(delta: EditDelta) {
+        applyLineDelta(delta.startLine, delta.oldLineCount, delta.newLineCount)
+        if (delta.lineDelta == 0 && delta.oldLineCount == 1) {
+            breaksByLine.remove(delta.startLine)
+        }
+    }
 }

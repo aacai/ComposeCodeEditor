@@ -43,4 +43,16 @@ class WrapBreaksCacheTest {
         assertContentEquals(intArrayOf(0, 4), cache.breaksFor(0, 4))
         assertContentEquals(intArrayOf(0, 4, 8), cache.breaksFor(3, 8))
     }
+
+    @Test
+    fun applyDeltaDropsEditedSingleLine() {
+        val cache = WrapBreaksCache()
+        cache.setVisCols(4)
+        cache.breaksFor(0, 8)
+        cache.breaksFor(1, 4)
+        cache.applyDelta(EditDelta.singleLine(1))
+        assertContentEquals(intArrayOf(0, 4, 8), cache.breaksFor(0, 8))
+        // 编辑行缓存已丢，下次按新长度重算
+        assertContentEquals(intArrayOf(0, 4, 6), cache.breaksFor(1, 6))
+    }
 }

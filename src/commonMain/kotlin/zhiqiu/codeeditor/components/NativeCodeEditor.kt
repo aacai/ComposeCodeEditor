@@ -1186,8 +1186,22 @@ fun NativeCodeEditor(
                         remember(visCols) {
                             WrapBreaksCache().also { it.setVisCols(visCols) }
                         }
+                    // 行缓冲 getLines 可能复用同一 MutableList：必须用 contentRevision 触发折行重建；
+                    // lastEditDelta 仅随修订号应用一次，避免折叠视口变化时重复平移行号。
+                    remember(state.contentRevision, wrapBreaksCache) {
+                        val d = state.lastEditDelta
+                        if (d != null) wrapBreaksCache.applyDelta(d)
+                        else if (state.contentRevision > 0) wrapBreaksCache.clear()
+                    }
                     val wrapRowsLayout =
-                        remember(lines, foldViewport, state.isWordWrap, visCols, wrapBreaksCache) {
+                        remember(
+                            lines,
+                            foldViewport,
+                            state.isWordWrap,
+                            visCols,
+                            wrapBreaksCache,
+                            state.contentRevision,
+                        ) {
                             buildWrapRowsLayout(
                                 lines = lines,
                                 foldViewport = foldViewport,
