@@ -1,4 +1,6 @@
 package zhiqiu.codeeditor.highlight
+import androidx.collection.MutableIntObjectMap
+import androidx.collection.MutableIntSet
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -34,7 +36,8 @@ class HighlightCache(
             }
         }
 
-    private val annotatedCache = mutableMapOf<Int, CachedAnnotated>()
+    /** Int 键免装箱；与 LRU 分离，仅缓存涂色结果。 */
+    private val annotatedCache = MutableIntObjectMap<CachedAnnotated>()
 
     private data class CachedAnnotated(
         val themeRef: EditorTheme,
@@ -57,7 +60,7 @@ class HighlightCache(
     private var visibleStart: Int = 0
     private var visibleEnd: Int = 0
     private var lexicalError: LexicalError? = null
-    private val heuristicLines = mutableSetOf<Int>()
+    private val heuristicLines = MutableIntSet()
 
     companion object {
         const val DEFAULT_MAX_CACHE_SIZE = 500
@@ -336,7 +339,7 @@ class HighlightCache(
         oldEnd: Int,
         lineDelta: Int,
     ) {
-        fun <V> rekey(map: MutableMap<Int, V>) {
+        fun <V> rekeyMap(map: MutableMap<Int, V>) {
             if (map.isEmpty()) return
             val next = linkedMapOf<Int, V>()
             for ((k, v) in map) {
@@ -352,11 +355,28 @@ class HighlightCache(
             map.clear()
             map.putAll(next)
         }
-        rekey(lruTokens)
-        rekey(annotatedCache)
+
+        fun <V> rekeyIntMap(map: MutableIntObjectMap<V>) {
+            if (map.isEmpty()) return
+            val next = MutableIntObjectMap<V>()
+            map.forEach { k, v ->
+                when {
+                    k < start -> next.put(k, v)
+                    k < oldEnd -> Unit
+                    else -> {
+                        val nk = k + lineDelta
+                        if (nk >= 0) next.put(nk, v)
+                    }
+                }
+            }
+            map.clear()
+            next.forEach { k, v -> map.put(k, v) }
+        }
+        rekeyMap(lruTokens)
+        rekeyIntMap(annotatedCache)
         if (heuristicLines.isNotEmpty()) {
-            val next = mutableSetOf<Int>()
-            for (k in heuristicLines) {
+            val next = MutableIntSet()
+            heuristicLines.forEach { k ->
                 when {
                     k < start -> next.add(k)
                     k < oldEnd -> Unit
@@ -367,7 +387,7 @@ class HighlightCache(
                 }
             }
             heuristicLines.clear()
-            heuristicLines.addAll(next)
+            next.forEach { heuristicLines.add(it) }
         }
     }
 
