@@ -5,18 +5,16 @@ package zhiqiu.codeeditor.text
  *
  * 行缓冲内部一律以 `\n` 分行（载入与粘贴都先 [normalize]），只在写盘时按这里的风格还原，
  * 这样光标列号、选区、高亮、缩进等所有行内计算都不必考虑 `\r`。
+ * 枚举值按 [next] 在 LF/CRLF 间循环切换（UI 换行符切换入口）。
  */
 enum class LineSeparator(
-    /** 写盘时使用的换行序列。 */
     val literal: String,
-    /** 状态栏展示名。 */
     val displayName: String,
 ) {
     LF("\n", "LF"),
     CRLF("\r\n", "CRLF"),
     ;
 
-    /** 状态栏标签点击时的下一档：LF ↔ CRLF。 */
     val next: LineSeparator
         get() = if (this == LF) CRLF else LF
 

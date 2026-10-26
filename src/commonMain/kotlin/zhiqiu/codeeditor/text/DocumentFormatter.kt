@@ -142,7 +142,6 @@ private object JsonPrettyPrinter {
     ) {
         private var i = 0
 
-        /** 第一个出错点；-1 表示还没失败过。 */
         var errorIndex = -1
             private set
         var errorMessage = ""

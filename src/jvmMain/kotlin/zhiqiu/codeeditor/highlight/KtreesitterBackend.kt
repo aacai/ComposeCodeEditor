@@ -97,10 +97,10 @@ object KtreesitterBackend : TsBackend {
         override val column get() = p.column.toInt()
     }
 
+    /** 对 ktreesitter `Tree` 的包装；[native] 暴露底层树供增量 `edit`/`parse` 复用。 */
     private class KtTree(
         private val t: Tree,
     ) : TsTree {
-        /** 暴露底层原生 Tree 供增量解析复用（仅本 object 内可见）。 */
         val native: Tree get() = t
 
         override fun rootNode() = KtNode(t.rootNode)

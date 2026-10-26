@@ -4,7 +4,6 @@ class LineBuffer(
 ) : ILineBuffer {
     private val lines = GapBuffer()
     private var cachedList: List<String>? = null
-    // 运行中的字符数/内容摘要：行级编辑增量维护，状态栏与 isModified 不再拼全文
     private val stats = RunningContentStats()
 
     init {

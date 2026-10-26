@@ -52,7 +52,6 @@ class PieceTreeBuffer(
     private val random = Random(0x5EED)
     private var root: Node? = null
 
-    // 内容摘要与 piece 元数据同步维护：插入加、删除减，见 ContentDigest
     private var digest: Long = ContentDigest.of(initial)
 
     init {

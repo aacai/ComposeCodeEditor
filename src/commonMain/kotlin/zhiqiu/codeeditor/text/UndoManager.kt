@@ -10,11 +10,8 @@ internal sealed class EditOp {
         val lineIndex: Int,
         val oldText: String,
         val newText: String,
-        /** 编辑发生处的列（oldText 中的锚点），由 ViewModel 在 push 时按当前光标填入。
-         *  撤销把光标还原回此列；重做则按长度差平移。删除型不合并，故每次退格独立、光标不甩到行末。 */
         val cursorColumn: Int = 0,
     ) : EditOp() {
-        /** 插入型：新文本比旧文本长（输入而非删除）。仅插入型连续同行才合并为一次撤销。 */
         val isInsertion: Boolean
             get() = newText.length > oldText.length
     }

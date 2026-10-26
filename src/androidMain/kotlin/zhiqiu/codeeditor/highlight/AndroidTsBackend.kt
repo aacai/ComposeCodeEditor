@@ -101,7 +101,6 @@ object AndroidTsBackend : TsBackend {
     private class AndroidTree(
         private val t: TSTree,
     ) : TsTree {
-        /** 暴露底层原生 TSTree 供增量解析复用（仅本 object 内可见）。 */
         val native: TSTree get() = t
 
         override fun rootNode() = AndroidNode(t.rootNode)

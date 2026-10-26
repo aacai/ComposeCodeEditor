@@ -11,7 +11,6 @@ import zhiqiu.codeeditor.text.EditDelta
  * 缓存自动回退逐行高亮，因此接入它不会让编辑器变色甚至变砖。
  */
 interface DocumentSyntaxHighlighter {
-    /** 文档级结论是否就绪。未就绪时所有行都走逐行回退。 */
     val isDocumentReady: Boolean
 
     /** 内容已变：作废已有结论（下次取 token 回退逐行高亮，重解析后恢复）。 */

@@ -1,6 +1,11 @@
 package zhiqiu.codeeditor.highlight
 import zhiqiu.codeeditor.EditorLanguage
-/** 语言的高亮规则配置。 包含关键字、类型名、注释符号、字符串分隔符和数字正则。 */
+/**
+ * 语言的高亮规则配置。 包含关键字、类型名、注释符号、字符串分隔符和数字正则。
+ * 其余三个可选标志：[nestedBlockComments] 是否允许块注释嵌套、[multiLineStringDelimiters] 多行字符串定界符集合、
+ * [stringsMaySpanLines] 普通字符串是否可跨行（默认仅多行定界符可跨行）。
+ */
+
 data class HighlightRules(
     val keywords: Set<String>,
     val types: Set<String>,
@@ -9,11 +14,8 @@ data class HighlightRules(
     val blockCommentEnd: String?,
     val stringDelimiters: List<String>,
     val numberPattern: Regex,
-    /** 块注释是否可嵌套（Kotlin 可以，C 系不行）：嵌套语言里注释中再开注释要计入深度 */
     val nestedBlockComments: Boolean = false,
-    /** 可跨行的字符串分隔符（Kotlin `"""`、Go 反引号等）：未闭合时把开串分隔符带进下一行 */
     val multiLineStringDelimiters: Set<String> = emptySet(),
-    /** 普通字符串是否允许跨行（Shell/SQL 的单引号串）：允许时未闭合不算词法错误 */
     val stringsMaySpanLines: Boolean = false,
 ) {
     companion object {
@@ -44,11 +46,9 @@ data class HighlightRules(
                 else -> plainTextRules()
             }
 
-        // 通用数字正则：整数、浮点数、下划线分隔、常见后缀
         private val defaultNumber =
             Regex("\\b\\d+(?:_\\d+)*(?:\\.\\d+(?:_\\d+)*)?[fFlL]?\\b")
 
-        // 十六进制 / 十进制，支持下划线分隔与常见后缀
         private val cNumber =
             Regex(
                 "\\b(?:0[xX][0-9a-fA-F]+(?:_[0-9a-fA-F]+)*|\\d+(?:_\\d+)*(?:\\.\\d+(?:_\\d+)*)?[fFlLuU]*)\\b",

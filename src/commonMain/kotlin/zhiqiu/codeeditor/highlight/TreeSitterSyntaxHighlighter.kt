@@ -25,11 +25,6 @@ class TreeSitterSyntaxHighlighter(
     private val fallback = RegexIncrementalHighlighter(createSyntaxHighlighter(language))
     private val parser: TsParser? = backend.createParser(language)
 
-    /**
-     * 解析互斥：tree-sitter 的 parser 不是线程安全的，且取消协程不会中断正在跑的原生 parse
-     * （`cancelAndJoin` 也等不到它），两个解析任务会在同一个 parser 上重叠，直接踩崩原生栈。
-     * 同一实例的解析必须真正串行。
-     */
     private val parseMutex = Mutex()
 
     @Volatile
@@ -367,7 +362,6 @@ class TreeSitterSyntaxHighlighter(
 
         private val PUNCTUATION_CHARS = setOf('(', ')', '{', '}', '[', ']', ';', ',', '.', '@')
 
-        /** 命名但其实承担关键字/常量角色的叶子（多数 grammar 里它们是匿名节点，这里兜底）。 */
         private val LITERAL_KEYWORD_TYPES =
             setOf(
                 "this",

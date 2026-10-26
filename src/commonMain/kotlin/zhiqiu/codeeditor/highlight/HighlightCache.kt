@@ -36,7 +36,6 @@ class HighlightCache(
             }
         }
 
-    /** Int 键免装箱；与 LRU 分离，仅缓存涂色结果。 */
     private val annotatedCache = MutableIntObjectMap<CachedAnnotated>()
 
     private data class CachedAnnotated(

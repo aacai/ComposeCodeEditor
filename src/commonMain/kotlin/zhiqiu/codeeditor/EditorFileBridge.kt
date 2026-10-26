@@ -16,7 +16,6 @@ interface EditorFileBridge {
     /** 把 [content] 回编译并写回来源 APK 的 [entryName] 条目。 */
     fun recompile(apkPath: String, entryName: String, content: String): Result<Unit>
 
-    /** 回编译成功后展示给用户的文案。 */
     val recompileSuccessMessage: String
         get() = "回编译成功"
 

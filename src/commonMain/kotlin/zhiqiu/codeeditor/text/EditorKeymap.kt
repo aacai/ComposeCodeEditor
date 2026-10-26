@@ -40,9 +40,9 @@ sealed interface SelectionEdit {
  * 与 Compose 的 `KeyEvent` 解耦成纯函数（修饰键已由调用方摊平成布尔量），方便单测；
  * 主修饰键只认 Ctrl 或 Meta（macOS 的 Cmd 等价 Ctrl），未组合修饰键的字母键一律不拦截，
  * 避免打断软键盘与 BasicTextField 的默认输入。
+ * [reservedForTextField]（C/V/X）是 BasicTextField 复制/粘贴/剪切的保留键，映射表不拦截。
  */
 object EditorKeymap {
-    /** BasicTextField 已自带的组合键：复制/粘贴/剪切交给文本字段默认行为，不重复处理。 */
     private val reservedForTextField = setOf('C', 'V', 'X')
 
     fun resolve(

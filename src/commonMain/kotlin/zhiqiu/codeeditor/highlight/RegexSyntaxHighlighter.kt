@@ -14,7 +14,6 @@ internal class RegexSyntaxHighlighter(
 ) : SyntaxHighlighter {
     private val identifierRegex = Regex("[a-zA-Z_][a-zA-Z0-9_]*")
 
-    // 按长度降序排列分隔符，优先匹配更长的（如 """ 优先于 "）
     private val sortedDelimiters = rules.stringDelimiters.sortedByDescending { it.length }
 
     private val blockStart = rules.blockCommentStart

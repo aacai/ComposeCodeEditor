@@ -44,7 +44,6 @@ enum class EditorLanguage(
     }
 }
 
-/** 选择器/状态栏展示用的可读名称（语言名本身不翻译）。 */
 val EditorLanguage.displayName: String
     get() =
         when (this) {

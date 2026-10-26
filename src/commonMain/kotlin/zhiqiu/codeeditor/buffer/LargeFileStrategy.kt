@@ -53,26 +53,21 @@ enum class PerformanceMode {
  * 提供文件大小检测、策略判断和性能模式选择功能。
  */
 object LargeFileStrategy {
-    // 字节单位常量
     const val KB: Long = 1024L
     const val MB: Long = 1024L * KB
 
-    // 文件大小阈值（单位：字节）
-    const val SMALL_FILE_THRESHOLD: Long = 1 * MB // 1 MB
-    const val MEDIUM_FILE_THRESHOLD: Long = 10 * MB // 10 MB
-    const val LARGE_FILE_THRESHOLD: Long = 50 * MB // 50 MB
+    const val SMALL_FILE_THRESHOLD: Long = 1 * MB
+    const val MEDIUM_FILE_THRESHOLD: Long = 10 * MB
+    const val LARGE_FILE_THRESHOLD: Long = 50 * MB
 
-    // 行数阈值（用于辅助判断）
     const val SMALL_LINE_THRESHOLD: Int = 10_000
     const val MEDIUM_LINE_THRESHOLD: Int = 50_000
     const val LARGE_LINE_THRESHOLD: Int = 100_000
 
-    // 警告阈值：超过此阈值时显示性能警告
-    const val WARNING_SIZE_THRESHOLD: Long = 5 * 1024L * 1024L // 5 MB
+    const val WARNING_SIZE_THRESHOLD: Long = 5 * 1024L * 1024L
     const val WARNING_LINE_THRESHOLD: Int = 20_000
 
-    // 降级阈值：超过此阈值时强制降级
-    const val DOWNGRADE_SIZE_THRESHOLD: Long = 20 * 1024L * 1024L // 20 MB
+    const val DOWNGRADE_SIZE_THRESHOLD: Long = 20 * 1024L * 1024L
     const val DOWNGRADE_LINE_THRESHOLD: Int = 80_000
 
     /**

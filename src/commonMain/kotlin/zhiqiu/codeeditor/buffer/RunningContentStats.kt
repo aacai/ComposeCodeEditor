@@ -7,9 +7,10 @@ package zhiqiu.codeeditor.buffer
  * 行级编辑即可增量维护，不必每次编辑都拼全文、比全文（状态栏字符数、
  * isModified 快速判定都建立在它上面）。混合用 splitmix64 终结器，
  * 保证相邻字符/相邻码点的散列值不相关，求和无规律可套。
+ *
+ * [LF] 是行分隔符在摘要中的散列基值，行级增删据此对摘要加/减。
  */
 internal object ContentDigest {
-    /** 行分隔符 `\n` 的散列值，与逐字符散列同口径。 */
     val LF: Long = char('\n')
 
     fun char(c: Char): Long {

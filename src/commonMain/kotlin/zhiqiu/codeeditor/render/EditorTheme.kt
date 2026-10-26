@@ -29,15 +29,10 @@ data class EditorTheme(
     val operator: Color,
     val punctuation: Color,
     val annotation: Color,
-    /** 括号对竖条（对齐 editorBracketPairGuide.background） */
     val bracketGuide: Color,
-    /** 活动括号对竖条（对齐 editorBracketPairGuide.activeBackground） */
     val bracketGuideActive: Color,
-    /** 配对括号背景（对齐 editorBracketMatch.background） */
     val bracketMatchBackground: Color,
-    /** 配对括号边框（对齐 editorBracketMatch.border） */
     val bracketMatchBorder: Color,
-    /** 词法错误（未闭合字符串、游离的块注释闭符），对齐 editor.errorForeground */
     val error: Color = Color(0xFFD32F2F),
 ) {
     companion object {

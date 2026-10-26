@@ -17,14 +17,9 @@ data class EditorSession(
     val cursorLine: Int = 0,
     val cursorColumn: Int = 0,
     val selection: SelectionRange? = null,
-    /** 已折叠区间的起始逻辑行；折叠区间本身按内容重新探测，这里只记「哪些起点是收着的」。 */
     val collapsedFoldStarts: Set<Int> = emptySet(),
-    /** 用户手动切过的高亮语言；为 null 时沿用按扩展名探测的结果。 */
     val language: EditorLanguage? = null,
-    /** 未保存的换行符风格选择；只在恢复草稿时生效，普通重开文件沿用磁盘探测。 */
     val lineSeparator: LineSeparator? = null,
-    /** 便签态（无路径）下的标题；有路径时由路径推导，这里留空即可。 */
     val fileName: String = "",
-    /** 快照时的行数：宿主据此判断这份会话是否还属于同一版内容。 */
     val lineCount: Int = 0,
 )

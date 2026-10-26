@@ -23,14 +23,10 @@ class ChunkedLineBuffer(
         }
 
     private var _lineCount: Int = 0
-    // chunkIndex -> 文件内字节偏移。静态全量映射（初始化时一次填好），无需 LRU 序，
-    // 用 MutableIntLongMap 避免 HashMap 对 Int key / Long value 的双重装箱。
     private val lineOffsets = MutableIntLongMap()
     private var fileSize: Long = 0L
     private var initialized = false
     private val editOps = mutableListOf<EditOp>()
-    // 运行中的字符数/内容摘要：首次访问才整篇读一次（与 getText 同数量级），
-    // 之后随行级编辑增量维护，大文件编辑不再每次拼全文
     private var stats: RunningContentStats? = null
 
     init {

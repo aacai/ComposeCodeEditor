@@ -52,19 +52,14 @@ import zhiqiu.codeeditor.text.WordBoundary
 
 private const val OPENING_VIEWPORT_LINES = 48
 
-/** 查找命中上限，避免超大文件一次分配上万条拖垮 UI。 */
 private const val MAX_SEARCH_MATCHES = 5_000
 
-// 光标镜像去抖窗口（ms）：热路径连续移动光标时合并为最后一次同步进 StateFlow
 private const val CURSOR_MIRROR_SYNC_DELAY_MS = 100L
 
-// 换行符探测取样行数：够判断整篇文档风格，又不用为探测读完整大文件
 private const val SEPARATOR_PROBE_LINES = 64
 
-// 结构诊断防抖窗口：输入停歇后才整篇解析，热路径不为每次按键读全文
 private const val LEXICAL_DIAGNOSE_DEBOUNCE_MS = 250L
 
-// 超过这个长度就放弃诊断：解析器是全文同步扫描，大文档的这一次扫描不值当
 private const val LEXICAL_DIAGNOSE_MAX_CHARS = 512 * 1024
 
 /** 诊断坐标是 0 基的，讲给人听要换成 1 基。 */
@@ -76,58 +71,47 @@ private fun LexicalError.readablePosition(): String = "第 ${line + 1} 行 第 $
  * 通过 [state]（StateFlow<NativeEditorState>）向 UI 暴露不可变状态快照，
  * 通过 [uiEvents] 发送轻量提示（如保存结果）。UI 统一通过 [onEvent] 派发 [NativeEditorEvent]，
  * 所有处理逻辑在 [onEvent] 内做统一异常捕获，异常降级后暴露到 UI 而非导致进程崩溃。
+ *
+ * 实现要点：
+ * - 构造注入的 [defaultDispatcher]/[ioDispatcher] 默认 Dispatchers.Default/IO，测试可替换以确定性等待。
+ * - [cursor] 是光标热路径快照，结构性变更会取消其去抖镜像同步（见 [scheduleCursorMirrorSync]）。
+ * - 后台任务（高亮/搜索/折叠/光标镜像）发起新任务前先取消上一次，避免竞态与重复扫描。
+ * - 拖选期间以 selectionGestureAnchor 冻结锚点，避免跨行拖拽时选区两端对调乱跳。
  */
 class NativeEditorViewModel(
-    // 后台计算调度器（全文本搜索等），默认 Dispatchers.Default；测试可注入以确定性等待
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-    // 文件读写调度器，默认 Dispatchers.IO；测试注入调度器后 advanceUntilIdle 才能等满整个读写
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    // 宿主的远端回传/回编译能力，默认无操作
     private val fileBridge: EditorFileBridge = EditorFileBridge,
 ) : ViewModel() {
     private val _state = MutableStateFlow(NativeEditorState(content = LineBuffer()))
     val state: StateFlow<NativeEditorState> = _state.asStateFlow()
 
-    /**
-     * 光标位置热路径状态：点击/拖拽移动光标只写这里（snapshot state），
-     * 不复制整个 [NativeEditorState]。StateFlow 中的 cursorLine/cursorColumn
-     * 为其去抖镜像（见 [scheduleCursorMirrorSync]）。
-     */
     val cursor = EditorCursorState()
 
-    // 光标镜像去抖同步任务（热路径专用；结构性变更会取消它并随 copy 立即同步）
     private var cursorSyncJob: Job? = null
 
-    // 轻量 UI 事件（保存结果等提示），由界面收集后展示 Toast
     private val _uiEvents = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val uiEvents: SharedFlow<String> = _uiEvents.asSharedFlow()
 
     private val undoManager = UndoManager()
     private val fileSystem = FileSystem.SYSTEM
 
-    // 手指拖选期间冻结的锚点（不被 normalize 换边），避免跨行拖时选区两端对调导致乱跳
     private var selectionGestureAnchor: Pair<Int, Int>? = null
 
     private var highlighter: SyntaxHighlighter =
         SyntaxHighlighterRegistry.resolve(EditorLanguage.PlainText)
     var highlightCache: HighlightCache = HighlightCache(highlighter)
 
-    // 后台渐进高亮任务（可见行优先），任何新的全量重建都会先取消它
     private var highlightJob: Job? = null
 
-    // 搜索任务：输入防抖 + 后台扫描，任何新的搜索都会先取消上一次
     private var searchJob: Job? = null
 
-    // 折叠区间重算（编辑后防抖）
     private var foldJob: Job? = null
 
-    // 待加载的文件路径（用于大文件警告确认后继续加载）
     private var pendingFilePath: String? = null
 
-    // 待加载文件对应的会话：大文件警告确认后才能一起带上
     private var pendingSession: EditorSession? = null
 
-    // 文件来源 APK 上下文：仅当文件是从 APK 内二进制 XML 解码而来时才有值，用于「回编译」写回
     private var sourceApkPath: String? = null
     private var sourceEntryName: String? = null
 
@@ -1173,7 +1157,6 @@ class NativeEditorViewModel(
         return true
     }
 
-    /** ReplaceAll 走增量 splice 的最大行数；命中过于分散时回退整篇重建。 */
     private val replaceAllDeltaMaxLines = 20_000
 
     private fun handleReplaceAll() {

@@ -249,7 +249,6 @@ private fun buildWrapRowsLayout(
     return WrapRowsLayout(isWordWrap, visCols, total, firstRow, span, logicalOfRow)
 }
 
-/** 视觉行布局 key：高位行号 + 低位行内序号（行内视觉行 < 2^14）。 */
 private const val ROW_KEY_SHIFT = 14
 
 private fun rowKey(line: Int, row: Int): Int =
@@ -265,21 +264,12 @@ private fun wrapRowRange(lineLen: Int, r: Int, visCols: Int): Pair<Int, Int> =
 
 private val SELECTION_HANDLE_COLOR = Color(0xFF2196F3)
 
-/** 触发全文件最宽行测量的最大行数；超过则回退按最长行×字符宽估算，避免测量开销。 */
 private const val MAX_LINES_FOR_MEASURE_WIDTH = 20_000
 
-/** 最宽行之外再预留的字符数（光标/手柄/末尾可读性）。 */
 private const val CONTENT_END_PADDING_CHARS = 4
 
-/**
- * 超长行渲染阈值（字符数）。超过此长度的行视为「超长行」：
- * - 预测量不再对其精确 measure（避免一次性 layout 十几万字符卡死）；
- * - ReadOnlyLine 只渲染横向可见窗口内的子串（横向虚拟化），避免 Text 全量 layout。
- * 取 12_000 字符（≈16k px）仅为「是否启用切片」的阈值，实际渲染窗口远小于此。
- */
 private const val MAX_RENDER_CHARS = 12_000
 
-/** 超长行切片窗口两侧预留字符数，避免横向滚动时频繁露白。 */
 internal const val SLICE_MARGIN_COLS = 200
 
 /**
@@ -340,7 +330,6 @@ internal fun computeSuperLongSliceBounds(
     }
 }
 
-/** Compose 单维可表示的最大宽度（px）。262143 为掩码边界不可表示，故取 262142。 */
 private const val MAX_CONSTRAINT_WIDTH_PX = 262142f
 
 /**
@@ -3250,9 +3239,6 @@ private fun HandleLayer(
             } else {
                 fallbackCw
             }
-        // 超长行 layout 只承载切片子串：光标列须转成切片局部列再查 cursorRect，
-        // 并以 sliceStart*charWidth 为基准平移到内容坐标，否则光标会画在 (col-layoutLen)*cw 处，
-        // 滚到行尾后偏离可见区（VSCode 对齐：列→X 与 渲染切片 同一坐标系）。
 val sliceStart: Int
             val sliceLen: Int
             if (textLen > MAX_RENDER_CHARS && viewportWidthPx > 0f && sliceCharWidthPx > 0f) {

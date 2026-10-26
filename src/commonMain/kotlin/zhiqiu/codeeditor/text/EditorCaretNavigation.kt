@@ -34,7 +34,6 @@ data class CaretPosition(
 /** 一次导航的落点，以及要不要从 [anchor] 拉出选区。 */
 data class NavigationOutcome(
     val caret: CaretPosition,
-    /** 非空表示扩选（anchor → caret）；为空表示只走光标，调用方应清掉已有选区。 */
     val anchor: CaretPosition?,
 )
 

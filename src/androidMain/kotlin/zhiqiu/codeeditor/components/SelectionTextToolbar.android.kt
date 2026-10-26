@@ -14,7 +14,6 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.TextToolbar
 import androidx.compose.ui.platform.TextToolbarStatus
 
-/** 与 WebView 编辑器一致的翻译菜单 id，避免与系统 id 冲突。 */
 private const val MENU_ID_TRANSLATE = 0xF001
 
 /**
