@@ -1,5 +1,4 @@
 package zhiqiu.codeeditor
-import zhiqiu.codeeditor.highlight.SyntaxHighlighter
 
 /**
  * 编辑器支持的语言枚举。

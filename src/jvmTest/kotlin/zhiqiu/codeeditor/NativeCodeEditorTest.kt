@@ -2,29 +2,23 @@ package zhiqiu.codeeditor
 
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.ExperimentalTestApi
-import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.longClick
-import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performTextInput
-import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.withKeyDown
@@ -47,9 +41,6 @@ import kotlin.test.fail
 import java.io.File
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import androidx.compose.ui.text.AnnotatedString
-import okio.FileSystem
-import okio.Path.Companion.toPath
-import okio.buffer
 import zhiqiu.codeeditor.buffer.LineBuffer
 import zhiqiu.codeeditor.components.NativeCodeEditor
 import zhiqiu.codeeditor.components.computeSuperLongLineSlice
@@ -57,7 +48,6 @@ import zhiqiu.codeeditor.highlight.HighlightCache
 import zhiqiu.codeeditor.highlight.HighlightRules
 import zhiqiu.codeeditor.highlight.RegexSyntaxHighlighter
 import zhiqiu.codeeditor.render.EditorTheme
-import zhiqiu.codeeditor.render.caretXBeforeScroll
 import zhiqiu.codeeditor.text.SelectionRange
 import zhiqiu.codeeditor.text.WordBoundary
 

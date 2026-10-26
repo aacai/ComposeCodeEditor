@@ -8,7 +8,6 @@ import zhiqiu.codeeditor.text.EditDelta
 import zhiqiu.codeeditor.text.FoldRegion
 import zhiqiu.codeeditor.text.LineSeparator
 import zhiqiu.codeeditor.buffer.ILineBuffer
-import zhiqiu.codeeditor.components.NativeCodeEditor
 import zhiqiu.codeeditor.buffer.PerformanceMode
 import zhiqiu.codeeditor.text.SelectionRange
 

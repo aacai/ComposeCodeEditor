@@ -82,7 +82,7 @@ internal class RegexSyntaxHighlighter(
             // 2.7 注解：@ 后接标识符路径（@Foo.Bar），可带 (...) 参数（单行内尽量匹配）
             if (line[pos] == '@' && pos + 1 < line.length && isIdentStart(line[pos + 1])) {
                 val start = pos
-                pos++ // 跳过 @
+                pos++ // 越过注解起始 @，进入标识符路径解析
                 while (pos < line.length) {
                     if (isIdentStart(line[pos])) {
                         while (pos < line.length && isIdentPart(line[pos])) pos++
