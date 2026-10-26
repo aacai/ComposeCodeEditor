@@ -69,16 +69,26 @@ class TreeSitterSyntaxHighlighter(
     /**
      * 后台整篇解析并按行切 token。返回 false 表示没有可用 grammar 或解析失败，
      * 调用方（缓存）保持逐行回退即可。
+     *
+     * [delta] 有旧全文时走局部 splice，避免每键 `joinToString` 整篇拷贝。
      */
-    override suspend fun parseDocument(lines: List<String>): Boolean {
+    override suspend fun parseDocument(
+        lines: List<String>,
+        delta: zhiqiu.codeeditor.text.EditDelta?,
+    ): Boolean {
         val p = parser ?: return false
-        val text = lines.joinToString("\n")
         return parseMutex.withLock {
+            val prevText = oldText
+            val text =
+                if (prevText != null && delta != null) {
+                    DocumentTextSplicer.splice(prevText, lines, delta)
+                } else {
+                    DocumentTextSplicer.joinLines(lines)
+                }
             // 文本未变且已有结论：直接复用，避免无谓重解析
-            if (oldText == text && oldTree != null) return@withLock isDocumentReady
+            if (prevText == text && oldTree != null) return@withLock isDocumentReady
 
             val prevTree = oldTree
-            val prevText = oldText
             val edit = if (prevText != null && prevTree != null) computeEdit(prevText, text) else null
             val newTree: TsTree =
                 try {

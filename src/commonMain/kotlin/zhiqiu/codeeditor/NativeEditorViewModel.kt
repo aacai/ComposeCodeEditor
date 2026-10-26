@@ -558,12 +558,17 @@ class NativeEditorViewModel(
         scheduleFoldRefresh()
     }
 
-    /** 局部失效高亮；脊未推满时重启后台 warm。 */
+    /** 局部失效高亮；文档级（Tree-sitter）必重解析，逐行模式脊未满才 warm。 */
     private fun refreshHighlightAfterEdit(
         delta: EditDelta,
         lines: List<String>,
     ) {
         highlightCache.applyDelta(delta, lines)
+        val doc = highlighter as? DocumentSyntaxHighlighter
+        if (doc != null) {
+            startDocumentParse(doc, lines, delta)
+            return
+        }
         if (highlightCache.getStateReadyUpTo() < lines.size) {
             startIncrementalHighlight(lines)
         }
@@ -2379,10 +2384,12 @@ class NativeEditorViewModel(
     /**
      * 文档级高亮（Tree-sitter）后台整篇解析：完成后作废行 token 并重绘视口。
      * 解析期间用户又改了内容，这一版结论直接丢弃，交给下一轮。
+     * [delta] 传给解析器做旧全文局部 splice，避免每键 join 整篇。
      */
     private fun startDocumentParse(
         doc: DocumentSyntaxHighlighter,
         lines: List<String>,
+        delta: EditDelta? = null,
     ) {
         val previous = highlightJob
         val revision = _state.value.contentRevision
@@ -2393,9 +2400,10 @@ class NativeEditorViewModel(
                     previous?.cancelAndJoin()
                     if (!isActive) return@launch
                     val snapshot = ArrayList(lines)
+                    val edit = delta
                     val ok =
                         withContext(defaultDispatcher) {
-                            runCatching { doc.parseDocument(snapshot) }.getOrDefault(false)
+                            runCatching { doc.parseDocument(snapshot, edit) }.getOrDefault(false)
                         }
                     if (!ok || !isActive) return@launch
                     if (_state.value.contentRevision != revision) return@launch
@@ -2421,7 +2429,7 @@ class NativeEditorViewModel(
         // 文档级高亮（Tree-sitter）：后台整篇解析，与逐行 warm 互斥
         val doc = highlighter as? DocumentSyntaxHighlighter
         if (doc != null) {
-            startDocumentParse(doc, lines)
+            startDocumentParse(doc, lines, delta = null)
             return
         }
         val previous = highlightJob
