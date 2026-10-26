@@ -69,9 +69,8 @@ kotlin {
             implementation(libs.treesitter.languages.bash)
         }
         androidMain.dependencies {
-            // Android tree-sitter：AndroidIDE 的 C 绑定（无 Java record，可正常打包）+ 其已发版的
-            // 7 个语法包。仅 AndroidIDE 发了版的语言走真解析，其余语言由调用方回退正则高亮。
-            // ktreesitter 的 Android 变体带 record，AGP 9 的 D8 脱糖会让 APK 构建失败，故 Android 不用它。
+            // Android tree-sitter：AndroidIDE 的 C 绑定（无 Java record，可正常打包）+ 已发版语法包。
+            // 其余语言由调用方回退正则高亮。ktreesitter Android 变体带 record，AGP 9 D8 会失败，不用。
             implementation(libs.android.tree.sitter)
             implementation(libs.android.ts.kotlin)
             implementation(libs.android.ts.java)
@@ -80,6 +79,8 @@ kotlin {
             implementation(libs.android.ts.python)
             implementation(libs.android.ts.c)
             implementation(libs.android.ts.cpp)
+            implementation(libs.android.ts.log)
+            implementation(libs.android.ts.properties)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

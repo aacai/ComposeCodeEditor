@@ -11,14 +11,16 @@ import com.itsaky.androidide.treesitter.c.TSLanguageC
 import com.itsaky.androidide.treesitter.java.TSLanguageJava
 import com.itsaky.androidide.treesitter.json.TSLanguageJson
 import com.itsaky.androidide.treesitter.kotlin.TSLanguageKotlin
+import com.itsaky.androidide.treesitter.log.TSLanguageLog
+import com.itsaky.androidide.treesitter.properties.TSLanguageProperties
 import com.itsaky.androidide.treesitter.python.TSLanguagePython
 import com.itsaky.androidide.treesitter.xml.TSLanguageXml
 import zhiqiu.codeeditor.EditorLanguage
 
 /**
  * Android 后端：用 AndroidIDE 的 tree-sitter 绑定（C 绑定 + 预编 .so，无 Java record，
- * 因此 D8 能正常脱糖/打包）。仅覆盖 AndroidIDE 已发版的语法包
- * （kotlin/java/json/xml/python/c/cpp）；其余语言返回 null，由调用方回退正则高亮。
+ * 因此 D8 能正常脱糖/打包）。覆盖 AndroidIDE 已发版语法包
+ * （kotlin/java/json/xml/python/c/cpp/log/properties）；其余语言返回 null，回退正则。
  *
  * 注意：AndroidIDE 的 [TSParser.parseString] 内部把源码转成 UTF-16，故节点列号本就是字符
  * 下标，[columnToChar] 恒等换算（与 JVM 后端的 UTF-8 字节换算不同）。
@@ -61,6 +63,8 @@ object AndroidTsBackend : TsBackend {
                 EditorLanguage.Python -> TSLanguagePython.getInstance()
                 EditorLanguage.C -> TSLanguageC.getInstance()
                 EditorLanguage.CPlus -> TSLanguageCpp.getInstance()
+                EditorLanguage.Log -> TSLanguageLog.getInstance()
+                EditorLanguage.Ini -> TSLanguageProperties.getInstance()
                 else -> null
             }
         } catch (t: Throwable) {
