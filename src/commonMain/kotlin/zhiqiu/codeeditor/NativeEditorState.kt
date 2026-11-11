@@ -58,6 +58,8 @@ data class NativeEditorState(
     val baselineLength: Int = 0,
     val baselineDigest: Long = 0L,
     val fontSize: Int = 14,
+    /** 编辑器字体 id，见 [zhiqiu.codeeditor.components.availableEditorFonts] */
+    val fontFamilyId: String = "default",
     val tabSize: Int = 4,
     val isWordWrap: Boolean = false,
     val lineSeparator: LineSeparator = LineSeparator.LF,

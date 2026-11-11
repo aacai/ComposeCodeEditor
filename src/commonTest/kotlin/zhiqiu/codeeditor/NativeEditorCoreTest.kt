@@ -986,9 +986,10 @@ class NativeEditorCoreTest {
 
     @Test
     fun visibleLinesHidesCollapsedInterior() {
+        // Method/Block：保留闭合行（endLine=4），只藏 2..3 → 可见 0,1,4,5
         val regions = listOf(FoldRegion(1, 4, FoldKind.Method))
         val visible = CodeFolding.visibleLines(6, regions, setOf(1))
-        assertEquals(listOf(0, 1, 5), visible)
+        assertEquals(listOf(0, 1, 4, 5), visible)
     }
 
     @Test
@@ -1003,10 +1004,11 @@ class NativeEditorCoreTest {
     fun viewportMapsCollapsedRegion() {
         val regions = listOf(FoldRegion(1, 4, FoldKind.Method))
         val vp = CodeFolding.viewport(6, regions, setOf(1))
-        assertEquals(3, vp.visibleCount)
+        assertEquals(4, vp.visibleCount)
         assertEquals(0, vp.logicalAt(0))
         assertEquals(1, vp.logicalAt(1))
-        assertEquals(5, vp.logicalAt(2))
+        assertEquals(4, vp.logicalAt(2))
+        assertEquals(5, vp.logicalAt(3))
         assertEquals(-1, vp.visibleAt(2))
         assertEquals(1, vp.nearestVisibleAtOrBefore(3))
     }

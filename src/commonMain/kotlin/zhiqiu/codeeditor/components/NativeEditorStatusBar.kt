@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import zhiqiu.codeeditor.NativeEditorState
+
 /**
  * 原生编辑器底部状态栏，与 WebView 编辑器的 [EditorStatusBar] 对齐：
  * 显示光标行/列、字符数、编码、换行符、语言与只读标记。
@@ -36,6 +37,8 @@ fun NativeEditorStatusBar(
     modifier: Modifier = Modifier,
     // 传入即可点击 LF/CRLF 标签切换换行符
     onLineSeparatorClick: (() -> Unit)? = null,
+    // 传入即可点击字体名切换/打开字体选择
+    onFontFamilyClick: (() -> Unit)? = null,
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -61,6 +64,11 @@ fun NativeEditorStatusBar(
             StatusItem(
                 state.lineSeparator.displayName,
                 onClick = onLineSeparatorClick,
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            StatusItem(
+                editorFontDisplayName(state.fontFamilyId),
+                onClick = onFontFamilyClick,
             )
             Spacer(modifier = Modifier.width(8.dp))
             StatusItem(state.language.name)

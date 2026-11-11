@@ -1,8 +1,13 @@
 package zhiqiu.codeeditor.text
 import zhiqiu.codeeditor.EditorLanguage
 /**
- * 可折叠区间（含起止行，折叠时隐藏 [startLine+1, endLine]）。
- * 对齐 VS Code：图标画在起始行 gutter，点击折叠后首行保留。
+ * 可折叠区间。
+ *
+ * 显示策略（对齐 Cursor / VS Code）：
+ * - 折叠图标画在起始行 gutter，首行始终保留，并在行尾挂省略号徽章。
+ * - [FoldKind.Block]/[FoldKind.Method]：endLine 为闭合 `}` 行，折叠时隐藏
+ *   `[startLine+1, endLine)`，**保留闭合行**（行号从 1 跳到 11 那种观感）。
+ * - 注释 / import / XML 等：隐藏 `[startLine+1, endLine]`（闭合标记一并收起）。
  */
 data class FoldRegion(
     val startLine: Int,
@@ -13,7 +18,19 @@ data class FoldRegion(
         require(endLine > startLine) { "fold must span at least 2 lines" }
     }
 
-    val hiddenLineCount: Int get() = endLine - startLine
+    /** 折叠后实际被隐藏的行数（不含起始行，也不含 brace 类保留的闭合行）。 */
+    val hiddenLineCount: Int
+        get() {
+            val last = lastHiddenLine()
+            return (last - startLine).coerceAtLeast(0)
+        }
+
+    /** 折叠时最后一个被隐藏的逻辑行；若无需隐藏返回 startLine（空区间）。 */
+    fun lastHiddenLine(): Int =
+        when (kind) {
+            FoldKind.Block, FoldKind.Method -> (endLine - 1).coerceAtLeast(startLine)
+            FoldKind.Imports, FoldKind.Comment -> endLine
+        }
 }
 
 enum class FoldKind {
@@ -152,7 +169,7 @@ object CodeFolding {
         val hidden = BooleanArray(lineCount)
         for (region in regions) {
             if (region.startLine !in collapsedStarts) continue
-            val last = region.endLine.coerceAtMost(lineCount - 1)
+            val last = region.lastHiddenLine().coerceAtMost(lineCount - 1)
             for (line in (region.startLine + 1)..last) {
                 hidden[line] = true
             }

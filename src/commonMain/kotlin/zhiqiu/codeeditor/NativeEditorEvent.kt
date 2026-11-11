@@ -68,6 +68,10 @@ sealed interface NativeEditorEvent {
         val size: Int,
     ) : NativeEditorEvent
 
+    data class FontFamilyChanged(
+        val fontFamilyId: String,
+    ) : NativeEditorEvent
+
     data class TabSizeChanged(
         val size: Int,
     ) : NativeEditorEvent

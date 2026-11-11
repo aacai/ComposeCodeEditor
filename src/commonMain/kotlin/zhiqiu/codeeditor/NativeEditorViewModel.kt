@@ -264,6 +264,9 @@ class NativeEditorViewModel(
             is NativeEditorEvent.FontSizeChanged -> {
                 handleFontSizeChanged(event.size)
             }
+            is NativeEditorEvent.FontFamilyChanged -> {
+                handleFontFamilyChanged(event.fontFamilyId)
+            }
 
             is NativeEditorEvent.TabSizeChanged -> {
                 handleTabSizeChanged(event.size)
@@ -1842,6 +1845,12 @@ class NativeEditorViewModel(
 
     private fun handleFontSizeChanged(size: Int) {
         _state.value = _state.value.copy(fontSize = size)
+    }
+
+    private fun handleFontFamilyChanged(fontFamilyId: String) {
+        val id = fontFamilyId.ifBlank { "default" }
+        if (_state.value.fontFamilyId == id) return
+        _state.value = _state.value.copy(fontFamilyId = id)
     }
 
     private fun handleTabSizeChanged(size: Int) {

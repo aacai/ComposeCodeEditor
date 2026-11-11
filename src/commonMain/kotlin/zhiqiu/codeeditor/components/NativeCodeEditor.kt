@@ -30,11 +30,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -420,6 +421,7 @@ fun NativeCodeEditor(
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
+    val codeFont = remember(state.fontFamilyId) { resolveEditorFont(state.fontFamilyId) }
     val lineHeightPx = with(density) { state.fontSize.sp.toPx() } * 1.5f
     val lineHeightDp = with(density) { lineHeightPx.toDp() }
     val foldingEnabled = state.performanceMode.enableCodeFolding
@@ -514,8 +516,8 @@ fun NativeCodeEditor(
     val foldGutterWidth = if (foldingEnabled) 16.dp else 0.dp
     // 行号栏宽度按当前字号下实际等宽数字字形测量，避免放大字号后行号被裁切（FR-1）；
     // 额外预留 24.dp 留白，避免默认字号下视觉过窄（FR-2）。随 fontSize / digitCount 缓存，滚动不重测。
-    val lineNumberWidth by remember(state.fontSize, digitCount, density, foldGutterWidth, gutterAdornmentWidth, showLineNumbers) {
-        val style = TextStyle(fontSize = state.fontSize.sp, fontFamily = editorFont)
+    val lineNumberWidth by remember(state.fontSize, digitCount, density, foldGutterWidth, gutterAdornmentWidth, showLineNumbers, codeFont) {
+        val style = TextStyle(fontSize = state.fontSize.sp, fontFamily = codeFont)
         val digitWidth = if (showLineNumbers) {
             textMeasurer
                 .measure(text = AnnotatedString("0".repeat(digitCount)), style = style)
@@ -529,14 +531,14 @@ fun NativeCodeEditor(
     }
 
     // 全文件最宽行像素宽（非换行模式撑开横向滚动范围，FR-001/FR-002）。
-    // 与 ReadOnlyLine 渲染同参（editorFont + fontSize + softWrap=false + Clip），保证测量≈实际宽度。
+    // 与 ReadOnlyLine 渲染同参（codeFont + fontSize + softWrap=false + Clip），保证测量≈实际宽度。
     // 另用可见行 TextLayoutResult 校正低估；超大文件改为「最长行×宽字符」估算。
     val measureMaxWidth = lineCount <= MAX_LINES_FOR_MEASURE_WIDTH
-    // 用偏宽字符估「整行滚动宽度」：Android 上 editorFont 非等宽，单用 "M" 会低估含 CJK 的行。
+    // 用偏宽字符估「整行滚动宽度」：非等宽字体单用 "M" 会低估含 CJK 的行。
     // 横向切片必须用窄/等宽格子（i、W），不能用「国」：否则 ASCII 超长行往右滑后盖不住视口。
     val (wideCharWidthDp, cellCharWidthDp) =
-        remember(state.fontSize, density) {
-            val style = TextStyle(fontSize = state.fontSize.sp, fontFamily = editorFont)
+        remember(state.fontSize, density, codeFont) {
+            val style = TextStyle(fontSize = state.fontSize.sp, fontFamily = codeFont)
             val cjkPx =
                 textMeasurer
                     .measure(text = AnnotatedString("国"), style = style)
@@ -570,8 +572,9 @@ fun NativeCodeEditor(
             wideCharWidthDp,
             observedCellWidthPx.floatValue,
             maxWidthTracker,
+            codeFont,
         ) {
-            val style = TextStyle(fontSize = state.fontSize.sp, fontFamily = editorFont)
+            val style = TextStyle(fontSize = state.fontSize.sp, fontFamily = codeFont)
             // 超长行精确 measure 会卡；回退定宽分类估算。单元格宽须与切片 charWidthPx 同源。
             val cellWidthPx =
                 if (observedCellWidthPx.floatValue > 0f) {
@@ -882,6 +885,7 @@ fun NativeCodeEditor(
         }
     }
 
+    CompositionLocalProvider(LocalEditorFont provides codeFont) {
     Box(
         modifier =
             modifier
@@ -965,7 +969,7 @@ fun NativeCodeEditor(
                                         text = (logicalIndex + 1).toString(),
                                         color = theme.lineNumber,
                                         fontSize = state.fontSize.sp,
-                                        fontFamily = editorFont,
+                                        fontFamily = codeFont,
                                         lineHeight = lineHeightDp.value.sp,
                                         textAlign = TextAlign.End,
                                         modifier =
@@ -1000,11 +1004,12 @@ fun NativeCodeEditor(
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     if (canFold) {
+                                        // 对齐 Cursor/VS Code：收起 ▶ / 展开 ▼；行号仍只画可见逻辑行
                                         Icon(
                                             imageVector = if (isCollapsed) {
-                                                Icons.Default.KeyboardArrowDown
+                                                Icons.AutoMirrored.Filled.KeyboardArrowRight
                                             } else {
-                                                Icons.Default.KeyboardArrowUp
+                                                Icons.Default.KeyboardArrowDown
                                             },
                                             contentDescription = if (isCollapsed) "Expand" else "Collapse",
                                             tint = theme.lineNumber,
@@ -1772,13 +1777,46 @@ val (rawLine, _) =
                                         },
                                     )
                                     if (isCollapsedFold && rowInLine == 0) {
+                                        // 省略号贴在行文本末尾（不是行盒最右侧），与行号「跳号」策略配套
+                                        val textEndPx =
+                                            lineLayouts[logicalIndex]?.let { lr ->
+                                                runCatching { lr.getLineRight(0) }.getOrNull()
+                                            } ?: run {
+                                                val slice =
+                                                    if (rowSliceEnd > rowSliceStart) {
+                                                        line.substring(
+                                                            rowSliceStart.coerceIn(0, line.length),
+                                                            rowSliceEnd.coerceIn(0, line.length),
+                                                        )
+                                                    } else {
+                                                        line
+                                                    }
+                                                textMeasurer
+                                                    .measure(
+                                                        text = AnnotatedString(slice),
+                                                        style =
+                                                            TextStyle(
+                                                                fontSize = state.fontSize.sp,
+                                                                fontFamily = codeFont,
+                                                            ),
+                                                    ).size.width
+                                                    .toFloat()
+                                            }
                                         FoldEllipsisBadge(
                                             fontSize = state.fontSize,
                                             lineHeightDp = lineHeightDp,
-                                            color = theme.comment,
-                                            modifier = Modifier
-                                                .align(Alignment.CenterEnd)
-                                                .padding(end = 10.dp),
+                                            color = theme.lineNumber,
+                                            chipFill = theme.currentLineBackground,
+                                            modifier =
+                                                Modifier
+                                                    .align(Alignment.CenterStart)
+                                                    .offset {
+                                                        val gap = with(density) { 6.dp.roundToPx() }
+                                                        IntOffset(
+                                                            (textEndPx + gap).roundToInt(),
+                                                            0,
+                                                        )
+                                                    },
                                         )
                                     }
                                 }
@@ -1950,6 +1988,7 @@ val (rawLine, _) =
             }
         }
     }
+    } // CompositionLocalProvider(LocalEditorFont)
 }
 
 /** 手指是否点在该行文本右侧空白（含空行）。 */
@@ -2288,7 +2327,7 @@ private fun ReadOnlyLine(
                     annotatedLine
                 },
             fontSize = fontSize.sp,
-            fontFamily = editorFont,
+            fontFamily = LocalEditorFont.current,
             lineHeight = lineHeightSp,
             color = theme.foreground,
             // 换行视觉行：行切片已按 visCols 划好，不再内部折行（softWrap=false 防宽字符再折溢出行高）
@@ -2471,29 +2510,34 @@ private fun ReadOnlyLine(
     }
 }
 
-/** 折叠行尾提示：淡色圆角胶囊 + 中点省略，不改动行文本以免干扰布局/输入。 */
+/**
+ * 折叠行内省略号徽章（Cursor/VS Code 风格）：贴在起始行文本末尾，
+ * 行号 gutter 仍只显示可见逻辑行号（中间行被折叠后出现 1 → 11 跳号）。
+ */
 @Composable
 private fun FoldEllipsisBadge(
     fontSize: Int,
     lineHeightDp: androidx.compose.ui.unit.Dp,
     color: Color,
+    chipFill: Color = color.copy(alpha = 0.18f),
     modifier: Modifier = Modifier,
 ) {
+    val font = LocalEditorFont.current
     Box(
         modifier =
             modifier
-                .height((lineHeightDp.value * 0.72f).dp)
-                .clip(RoundedCornerShape(percent = 50))
-                .background(color.copy(alpha = 0.14f))
-                .padding(horizontal = 7.dp),
+                .height((lineHeightDp.value * 0.7f).dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(chipFill.copy(alpha = 0.92f))
+                .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = "···",
-            color = color.copy(alpha = 0.85f),
-            fontSize = (fontSize * 0.85f).sp,
-            fontFamily = editorFont,
-            letterSpacing = 1.5.sp,
+            color = color.copy(alpha = 0.9f),
+            fontSize = (fontSize * 0.78f).sp,
+            fontFamily = font,
+            letterSpacing = 1.2.sp,
             maxLines = 1,
         )
     }
@@ -2514,7 +2558,7 @@ private fun ActiveLineNumberText(
         text = (cursor.line + 1).toString(),
         color = color,
         fontSize = fontSize,
-        fontFamily = editorFont,
+        fontFamily = LocalEditorFont.current,
         lineHeight = lineHeight,
         textAlign = TextAlign.End,
         modifier = Modifier.fillMaxWidth().padding(end = 4.dp),
@@ -2910,7 +2954,7 @@ private fun InputLayer(
             TextStyle(
                 color = Color.Transparent,
                 fontSize = fontSize.sp,
-                fontFamily = editorFont,
+                fontFamily = LocalEditorFont.current,
                 lineHeight = lineHeightSp,
             ),
         cursorBrush = SolidColor(Color.Transparent),
