@@ -306,6 +306,57 @@ class NativeCodeEditorTest {
         assertEquals(cursorBefore.second, state.value.cursorColumn, "点按手柄不应移动光标列")
     }
 
+    /**
+     * 光标移到视口外的行时，编辑区必须自动滚动到光标行：
+     * 否则「当前行高亮」画在视口外，用户看到的画面停在原地（撤销后尤其明显）。
+     */
+    @Test
+    fun cursorMovingOutOfViewport_scrollsContentToCursorLine() = runComposeUiTest {
+        val content = LineBuffer((0 until 120).joinToString("\n") { "line $it" } + "\n")
+        val state = mutableStateOf(
+            NativeEditorState(
+                content = content,
+                cursorLine = 0,
+                isReadOnly = false,
+                language = EditorLanguage.PlainText,
+            )
+        )
+        val cursor = EditorCursorState()
+        val cache = buildHighlightCache(state.value)
+        val listState = androidx.compose.foundation.lazy.LazyListState()
+        setContent {
+            NativeCodeEditor(
+                state = state.value,
+                cursor = cursor,
+                onLineContentChange = { _, _ -> },
+                onCursorChange = { line, col ->
+                    cursor.line = line
+                    cursor.column = col
+                    state.value = state.value.copy(cursorLine = line, cursorColumn = col)
+                },
+                onSelectionStarted = { _, _ -> },
+                onSelectionUpdated = { _, _ -> },
+                onSelectionCleared = {},
+                onFontSizeChanged = {},
+                highlightCache = cache,
+                externalListState = listState,
+                theme = EditorTheme.dark()
+            )
+        }
+        awaitIdle()
+        assertEquals(0, listState.firstVisibleItemIndex, "初始应停在第 0 行")
+
+        cursor.line = 100
+        cursor.column = 0
+        awaitIdle()
+
+        assertTrue(
+            listState.firstVisibleItemIndex > 0,
+            "光标移到第 100 行后视口应滚动过去，实际 firstVisibleItemIndex=" +
+                listState.firstVisibleItemIndex
+        )
+    }
+
     @Test
     fun draggingHandle_extendsSelectionToTargetLine() = runComposeUiTest {
         val state = mutableStateOf(buildState(isReadOnly = false))
@@ -1953,6 +2004,9 @@ class NativeCodeEditorTest {
                         onLineContentChange = { line, text ->
                             viewModel.onEvent(NativeEditorEvent.LineContentChanged(line, text))
                         },
+                        onEnterKey = { line, col ->
+                            viewModel.onEvent(NativeEditorEvent.EnterPressed(line, col))
+                        },
                         onCursorChange = { line, col ->
                             viewModel.onEvent(NativeEditorEvent.CursorMoved(line, col))
                         },
@@ -2089,6 +2143,79 @@ class NativeCodeEditorTest {
         )
     }
 
+    /**
+     * 点击输入层最左侧（行首吸附区）必须把光标放到行首，不能落在首字符之后。
+     */
+    @Test
+    fun clickingLineStartPutsCaretAtColumnZero() = runComposeUiTest {
+        val content = LineBuffer("hello world\n")
+        val state = mutableStateOf(
+            NativeEditorState(
+                content = content,
+                cursorLine = 0,
+                isReadOnly = false,
+                language = EditorLanguage.PlainText,
+            )
+        )
+        val cursor = EditorCursorState().apply { line = 0; column = 11 }
+        val cache = buildHighlightCache(state.value)
+        setContent {
+            NativeCodeEditor(
+                state = state.value,
+                cursor = cursor,
+                onLineContentChange = { _, _ -> },
+                onCursorChange = { line, col ->
+                    cursor.line = line
+                    cursor.column = col
+                    state.value = state.value.copy(cursorLine = line, cursorColumn = col)
+                },
+                onSelectionStarted = { _, _ -> },
+                onSelectionUpdated = { _, _ -> },
+                onSelectionCleared = {},
+                onFontSizeChanged = {},
+                highlightCache = cache,
+                theme = EditorTheme.dark()
+            )
+        }
+        awaitIdle()
+
+        onNodeWithTag("editor-basictextfield").performTouchInput {
+            click(Offset(2f, height / 2f))
+        }
+        awaitIdle()
+
+        assertEquals(0, cursor.column, "点击行首吸附区应落到行首，实际列=${cursor.column}")
+    }
+
+    /**
+     * 文件末尾连续回车：每次都要真的多出一行并下移光标。
+     * 回归点：末尾空行二次回车后界面卡住不动（状态还在变，但输入层不再接受新行）。
+     */
+    @Test
+    fun repeatedEnterAtDocumentEndKeepsCreatingEmptyLines() {
+        val probe =
+            driveKeyboard(
+                initialText = "a\nb\n",
+                startLine = 2,
+                startColumn = 0,
+                steps = List(5) { KeyboardStep.Type("\n") },
+            )
+        assertEquals(
+            listOf(3 to 0, 4 to 0, 5 to 0, 6 to 0, 7 to 0),
+            probe.carets,
+            "末尾连续回车应每次下移一行，不能停在同一行",
+        )
+        assertEquals(
+            8,
+            probe.lines.size,
+            "5 次回车后应有 3 + 5 = 8 行，实际 ${probe.lines.size} 行：${probe.lines}",
+        )
+        assertTrue(
+            probe.lines.drop(3).all { it.isEmpty() },
+            "新插入的行必须是空行，实际：${probe.lines}",
+        )
+    }
+
     @Test
     fun shiftArrowsExtendTheSelectionFromTheOppositeEdge() {
         val probe =
@@ -2198,6 +2325,49 @@ class NativeCodeEditorTest {
             "选区从行首罩到下一行行首：整行连同换行一起消失",
         )
         assertTrue(probe.clipboardCalls.isEmpty(), "删除不写剪贴板，那是剪切的事")
+    }
+
+    @Test
+    fun backspaceAtLineStartMergesIntoPreviousLine() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 1,
+                startColumn = 0,
+                steps =
+                    listOf(
+                        KeyboardStep.Press(Key.Backspace),
+                    ),
+            )
+        assertEquals(
+            listOf("fun main() {    println(1)", "}", ""),
+            probe.lines,
+            "行首退格要把本行接到上一行末尾（VS Code 行为）",
+        )
+        assertEquals(
+            listOf(0 to 12),
+            probe.carets,
+            "合并后光标落在上一行末尾（拼接处），不是行首",
+        )
+    }
+
+    @Test
+    fun backspaceAtLineStartOnTheFirstLineDoesNothing() {
+        val probe =
+            driveKeyboard(
+                initialText = "fun main() {\n    println(1)\n}\n",
+                startLine = 0,
+                startColumn = 0,
+                steps =
+                    listOf(
+                        KeyboardStep.Press(Key.Backspace),
+                    ),
+            )
+        assertEquals(
+            listOf("fun main() {", "    println(1)", "}", ""),
+            probe.lines,
+            "第一行行首没有上一行可接，退格必须什么都不做",
+        )
     }
 
     @Test

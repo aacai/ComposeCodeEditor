@@ -23,6 +23,7 @@ class EditorShortcutTest {
                 EditorShortcut.Close to NativeEditorEvent.DismissOverlay,
                 EditorShortcut.Format to NativeEditorEvent.FormatDocument,
                 EditorShortcut.DeleteSelection to NativeEditorEvent.DeleteSelection,
+                EditorShortcut.BackspaceAtLineStart to NativeEditorEvent.BackspaceAtLineStart,
             ),
             EditorShortcut.entries.associateWith { it.toEditorEvent() }.filterValues { it != null },
         )

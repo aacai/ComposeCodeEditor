@@ -43,6 +43,13 @@ internal sealed class EditOp {
         val newLines: List<String>,
         val targetStart: Int,
         val replaceCount: Int,
+        /**
+         * 撤销后光标应回到的位置（操作发生前）。-1 表示不指定，由撤销方按默认规则推导。
+         * 合并行这类「把光标甩到别处」的操作必须带上，否则撤销后光标停在合并点，
+         * 当前行高亮落在用户没操作过的那一行（VS Code 语义：撤销回到操作前的光标）。
+         */
+        val undoCursorLine: Int = -1,
+        val undoCursorColumn: Int = -1,
     ) : EditOp()
 }
 

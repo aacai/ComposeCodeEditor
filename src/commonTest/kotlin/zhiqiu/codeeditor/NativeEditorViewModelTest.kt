@@ -385,6 +385,40 @@ class NativeEditorViewModelTest {
         }
 
     @Test
+    fun testBackspaceAtLineStartMergesIntoPreviousLineAndUndoes() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta\ngamma"))
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(1, 0))
+
+            viewModel.onEvent(NativeEditorEvent.BackspaceAtLineStart)
+
+            assertEquals("alphabeta\ngamma", viewModel.state.value.content.getText())
+            assertEquals(0, viewModel.state.value.cursorLine)
+            assertEquals(5, viewModel.state.value.cursorColumn)
+
+            viewModel.onEvent(NativeEditorEvent.Undo)
+            assertEquals(
+                "alpha\nbeta\ngamma",
+                viewModel.state.value.content.getText(),
+            )
+            // 撤销后光标回到操作前的位置（第二行行首），而不是停在合并点
+            assertEquals(1, viewModel.state.value.cursorLine)
+            assertEquals(0, viewModel.state.value.cursorColumn)
+        }
+
+    @Test
+    fun testBackspaceAtFirstLineIsANoOp() =
+        runTest {
+            viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta"))
+            viewModel.onEvent(NativeEditorEvent.CursorMoved(0, 0))
+            val before = viewModel.state.value
+
+            viewModel.onEvent(NativeEditorEvent.BackspaceAtLineStart)
+
+            assertEquals(before, viewModel.state.value)
+        }
+
+    @Test
     fun testDeleteSelectionOnAZeroWidthBoxIsANoOp() =
         runTest {
             viewModel.onEvent(NativeEditorEvent.ContentChanged("alpha\nbeta\ngamma"))

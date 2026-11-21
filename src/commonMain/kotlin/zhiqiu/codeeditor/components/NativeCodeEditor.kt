@@ -487,16 +487,8 @@ fun NativeCodeEditor(
     // 注意：cursor 是引用稳定的 snapshot state holder，在 derivedStateOf 里直读即可；
     // 选区相关仍用 rememberUpdatedState，避免捕获首帧 state 参数快照。
     // 当前行顶部 Y 在 BoxWithConstraints 内重算（需换行视觉行映射），见 currentLineTopY 定义。
-    // 当前行高亮背景：单一常驻覆盖层，靠 offset + alpha 跟随光标，
-    // 不随光标重组/重绘文本行（避免换行的瞬间「旧行+新行」各重绘一次背景）。
-    val currentLineHighlightAlpha =
-        remember {
-            derivedStateOf {
-                if (latestHasSelection) return@derivedStateOf 0f
-                val hasMatch = state.searchMatches.any { it.line == cursor.line }
-                if (hasMatch) 0f else 1f
-            }
-        }
+    // 当前行高亮直接画在内容行/行号项内部（见各自 items 里的 drawBehind / background），
+    // 不再有跟随光标的覆盖层：那种实现移动后会残留旧位置，且 Y 与真实排版有亚像素偏差。
     // 超长行输入层：宿主层贴在内容区左缘（不随横向滚动偏移）；切片与背后 ReadOnlyLine 的对齐
     // 由 InputLayer 内部按 winStart*cw - scroll 微调。普通行仍整体随横向滚动偏移。
     val inputLayerOffsetX =
@@ -785,8 +777,18 @@ fun NativeCodeEditor(
         val isFreshDocument = revealedDocument.value !== state.content
         revealedDocument.value = state.content
         reveal(cursor.line, caretRowOfCursor(), isFreshDocument)
-        snapshotFlow { cursor.line to caretRowOfCursor() }
-            .collect { (cursorLine, caretRow) -> reveal(cursorLine, caretRow, false) }
+        // 触发源除了光标行，还要带上「内容行数」：
+        // 撤销/重做恢复多行时，光标行可能没变（仍是同一行），但内容行数变了，
+        // 此时旧光标行已落到视口外（撤销合并后视口还停在文件开头），必须重新 reveal，
+        // 否则当前行高亮在视口外看不见，观感就是「高亮停在第 1 行」。
+        // contentRevision 只是为了让 snapshotFlow 在内容变动时重算 block（普通属性变化不会触发），
+        // 真正参与比较的是行数，所以逐字输入不会产生额外滚动。
+        snapshotFlow {
+            state.contentRevision
+            val lineCount = state.content.lineCount
+            Triple(cursor.line, caretRowOfCursor(), lineCount)
+        }
+            .collect { (cursorLine, caretRow, _) -> reveal(cursorLine, caretRow, false) }
     }
 
     // 仅在「折叠集合」变化时重映射滚动；foldRegions 防抖刷新也会换新 List，
@@ -821,14 +823,23 @@ fun NativeCodeEditor(
         runCatching { lineNumberListState.scrollToItem(targetRow, oldOffset) }
     }
 
-    // 编辑区 → 行号栏单向滚动同步（避免双向同步导致循环跳动）
+    // 编辑区 → 行号栏单向滚动同步（避免双向同步导致循环跳动）。
+    // 必须逐帧同值：行号列与编辑区是两套独立滚动偏移，用 sample(50) 之类的时间节流
+    // 会让滚动过程中的行号落后编辑区，当前行高亮与行号就会错开一条缝隙。
+    // requestScrollToItem 不挂起、不进 MutatorMutex，滚动中每帧追平不会打断惯性。
     LaunchedEffect(contentListState) {
         snapshotFlow {
             contentListState.firstVisibleItemIndex to
                 contentListState.firstVisibleItemScrollOffset
-        }.sample(50).collectLatest { (index, offset) ->
-            lineNumberListState.scrollToItem(index, offset)
         }
+            .distinctUntilChanged()
+            .collect { (index, offset) ->
+                if (lineNumberListState.firstVisibleItemIndex != index ||
+                    lineNumberListState.firstVisibleItemScrollOffset != offset
+                ) {
+                    lineNumberListState.requestScrollToItem(index, offset)
+                }
+            }
     }
 
     val syntaxHighlightEnabled = state.performanceMode.enableSyntaxHighlight
@@ -894,12 +905,10 @@ fun NativeCodeEditor(
                 .background(theme.background),
     ) {
         Row(modifier = Modifier.fillMaxHeight()) {
-            // 行号覆盖层 Y：基于「行号列自身滚动 + 光标行」每帧重算。
-            // 优化：在 offset lambda 中计算（读 cursor.line 快照），组合阶段不读光标 → 整列不重组。
             // ---- 行号栏（虚拟化）：禁止独立滚动，只跟随编辑区 ----
-            // 当前行高亮用「单个移动覆盖层」实现，行号项本身不读光标行，
-            // 否则点击行时整列 itemsIndexed 会对全部可见项重跑 lambda/重绘 → 掉帧。
-            // 覆盖层由 currentLineTopY（仅光标/滚动变化时变）驱动，点击时只移动它。
+            // 当前行高亮直接作为行号项自己的背景（见下方 items）：高亮矩形与行号文字
+            // 同属一个行盒，天然像素级对齐；用独立覆盖层按行高估算位置时，
+            // 行号列与编辑区是两套滚动偏移，滚动中/小数行高下都会错开，移动后还会残留旧位置。
             Box(
                 modifier =
                     Modifier
@@ -907,28 +916,9 @@ fun NativeCodeEditor(
                         .fillMaxHeight()
                         .background(theme.background),
             ) {
-                // 仅在无选区时显示当前行高亮（常驻覆盖层，靠 offset+alpha 跟随光标，不随文本行重绘）
-                if (state.selection == null) {
-                    Box(
-                        modifier =
-                            Modifier
-                                .offset {
-                                    val lnFirstIndex = lineNumberListState.firstVisibleItemIndex
-                                    val lnFirstOffset = lineNumberListState.firstVisibleItemScrollOffset
-                                    val vis =
-                                        wrapRowsLayoutState.firstRowOf(
-                                            latestFoldViewport.nearestVisibleAtOrBefore(cursor.line),
-                                        )
-                                    IntOffset(
-                                        0,
-                                        if (vis < 0) -10_000
-                                        else ((-lnFirstOffset).toFloat() + (vis - lnFirstIndex) * lineHeightPx).roundToInt()
-                                    )
-                                }.width(lineNumberWidth)
-                                .height(lineHeightDp)
-                                .background(theme.currentLineBackground),
-                    )
-                }
+                // 当前行高亮直接画在行号项内部（见下方 items）：高亮矩形与行号文字同属一个 Row，
+                // 天然像素级对齐；用独立覆盖层按「行号差 × 行高」估位置时，
+                // 行号列与编辑区滚动是两套偏移，滚动中/小数行高下都会错开。
                 val isReadOnly = state.isReadOnly
                 LazyColumn(
                     state = lineNumberListState,
@@ -949,11 +939,28 @@ fun NativeCodeEditor(
                         val isFirstRow = rowInLine == 0
                         val canFold = isFirstRow && logicalIndex in foldableStarts
                         val isCollapsed = isFirstRow && logicalIndex in state.collapsedFolds
+                        // 当前行高亮长在本项内部：只有「是否当前行」真的翻转的项才重组，
+                        // 其余可见行读到同一个 false 不会重绘。
+                        val isCurrentRow =
+                            remember(visIndex) {
+                                derivedStateOf {
+                                    isFirstRow &&
+                                        !latestHasSelection &&
+                                        cursor.line == logicalIndex
+                                }
+                            }
                         Row(
                             modifier =
                                 Modifier
                                     .width(lineNumberWidth)
                                     .height(lineHeightDp)
+                                    .then(
+                                        if (isCurrentRow.value) {
+                                            Modifier.background(theme.currentLineBackground)
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
                                     .padding(end = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -1215,6 +1222,23 @@ fun NativeCodeEditor(
                     }
                     val latestWrapRowsLayout by rememberUpdatedState(wrapRowsLayout)
 
+                    /**
+                     * 视觉行 [vis] 在编辑区视口内的顶部 Y。
+                     * 优先取 LazyColumn 已布局 item 的真实 offset：行高是小数（fontSize*1.5）
+                     * 时，「行号差 × 行高」的浮点累加会和实际排版差出亚像素，行长越多偏得越远，
+                     * 表现为当前行高亮与左侧行号越滚越不齐。不可见时才退回估算（此时看不见）。
+                     */
+                    fun rowTopOf(vis: Int): Float {
+                        val exact =
+                            contentListState.layoutInfo.visibleItemsInfo
+                                .firstOrNull { it.index == vis }
+                                ?.offset
+                        if (exact != null) return exact.toFloat()
+                        val firstIndex = contentListState.firstVisibleItemIndex
+                        val firstOffset = contentListState.firstVisibleItemScrollOffset
+                        return -firstOffset.toFloat() + (vis - firstIndex) * lineHeightPx
+                    }
+
                     // 当前行（或选区冻结行）首个视觉行顶部 Y：换行模式取该行首行，
                     // 再叠加光标所在视觉行偏移（输入层为单行窗口，须贴光标所在视觉行）。
                     val currentLineTopY =
@@ -1227,13 +1251,10 @@ fun NativeCodeEditor(
                                         inputLayerLineState.value
                                     }
                                 val vis =
-                                    wrapRowsLayout.firstRowOf(
+                                    latestWrapRowsLayout.firstRowOf(
                                         latestFoldViewport.nearestVisibleAtOrBefore(anchorLine),
                                     )
-                                val firstIndex = contentListState.firstVisibleItemIndex
-                                val firstOffset = contentListState.firstVisibleItemScrollOffset
-                                val top0 = -firstOffset.toFloat()
-                                val lineTop = top0 + (vis - firstIndex) * lineHeightPx
+                                val lineTop = rowTopOf(vis)
                                 // 换行模式：输入层是单行窗口，贴在光标所在视觉行
                                 if (state.isWordWrap && visCols > 0) {
                                     val caretRow = wrapRowOfColumn(cursor.column, visCols)
@@ -1244,51 +1265,8 @@ fun NativeCodeEditor(
                             }
                         }
 
-                    // 当前行高亮：单一常驻覆盖层，靠 offset + alpha 跟随光标，不重绘文本行。
-                    // 换行模式覆盖整个折行块（首行到末行），非换行覆盖单行。
-                    val currentLineBlockTop =
-                        remember {
-                            derivedStateOf {
-                                val anchorLine =
-                                    if (!latestHasSelection) {
-                                        cursor.line
-                                    } else {
-                                        inputLayerLineState.value
-                                    }
-                                val vis =
-                                    wrapRowsLayout.firstRowOf(
-                                        latestFoldViewport.nearestVisibleAtOrBefore(anchorLine),
-                                    )
-                                val firstIndex = contentListState.firstVisibleItemIndex
-                                val firstOffset = contentListState.firstVisibleItemScrollOffset
-                                -firstOffset.toFloat() + (vis - firstIndex) * lineHeightPx
-                            }
-                        }
-                    val currentLineBlockHeight =
-                        remember {
-                            derivedStateOf {
-                                if (!state.isWordWrap) return@derivedStateOf lineHeightPx
-                                val anchorLine =
-                                    if (!latestHasSelection) {
-                                        cursor.line
-                                    } else {
-                                        inputLayerLineState.value
-                                    }
-                                wrapRowsLayout
-                                    .rowsOf(
-                                        latestFoldViewport.nearestVisibleAtOrBefore(anchorLine),
-                                    ).coerceAtLeast(1) * lineHeightPx
-                            }
-                        }
-                    Box(
-                        modifier =
-                            Modifier
-                                .offset { IntOffset(0, currentLineBlockTop.value.roundToInt()) }
-                                .width(viewportWidth)
-                                .height(with(density) { currentLineBlockHeight.value.toDp() })
-                                .alpha(currentLineHighlightAlpha.value)
-                                .background(theme.currentLineBackground),
-                    )
+                    // 当前行高亮已下沉到每个内容行内部（见 items 里的 drawBehind）：
+                    // 覆盖层方案在移动后会残留旧位置的黄带，且 Y 靠行高估算与真实排版有偏差。
                     LazyColumnScrollbar(
                         listState = contentListState,
                         autoHide = true,
@@ -1687,6 +1665,25 @@ val (rawLine, _) =
                                 // 外层：把横向滚动撑到真实内容宽度（VSCode 语义，超长行可滚到行尾）。
                                 // 内层行盒宽度仍钳制到 Compose 上限，避免 .width() 创建超限固定约束崩溃；
                                 // 超长行切片文本由 offset 平移到钳制区之外，靠外层上报宽度保证可见可滚。
+                                // 当前行高亮「长在本行内部」，不再用跟随光标的独立覆盖层：
+                                // 覆盖层移动后旧位置会被残留成一条黄带（就是「高亮停在第 N 行」的观感），
+                                // 而且它的 Y 靠「行号差 × 行高」估算，与真实排版总有亚像素偏差。
+                                // 放在行盒里既不会残留，也与行号栏的高亮（同样长在行号项里）严格同一行盒。
+                                val currentRowAlpha =
+                                    remember(visIndex) {
+                                        derivedStateOf {
+                                            if (latestHasSelection) {
+                                                0f
+                                            } else if (cursor.line != logicalIndex) {
+                                                0f
+                                            } else if (!searchMatchesByLine[logicalIndex].isNullOrEmpty()) {
+                                                // 搜索命中行有自己的底色，不叠加当前行背景
+                                                0f
+                                            } else {
+                                                1f
+                                            }
+                                        }
+                                    }
                                 Box(
                                     modifier =
                                         Modifier.layout { measurable, constraints ->
@@ -1702,8 +1699,21 @@ val (rawLine, _) =
                                                     lineBackground?.invoke(logicalIndex)
                                                         ?: Color.Transparent,
                                                 )
+                                                .drawBehind {
+                                                    val alpha = currentRowAlpha.value
+                                                    if (alpha > 0f) {
+                                                        drawRect(
+                                                            color = theme.currentLineBackground,
+                                                            alpha = alpha,
+                                                        )
+                                                    }
+                                                }
                                                 .width(contentWidth)
                                                 .height(lineHeightDp),
+                                        // 与行号列保持一致：行号项（以及活动行号覆盖层）都按行盒居中。
+                                        // 字体实际行高小于 lineHeightDp 时，顶部对齐会让内容比行号高约 3px，
+                                        // 视觉上就是「高亮行的蓝色文字偏上」。
+                                        contentAlignment = Alignment.CenterStart,
                                     ) {
                                     ReadOnlyLine(
                                         line = line,
@@ -1868,6 +1878,7 @@ val (rawLine, _) =
                             onEnterKey = onEnterKey,
                             onEditorShortcut = onEditorShortcut,
                             onPasteText = onPasteText,
+                            onBackspaceAtLineStart = { onEditorShortcut(EditorShortcut.BackspaceAtLineStart) },
                             onCopy = onCopy,
                             onCut = onCut,
                             onPaste = onPaste,
@@ -2428,11 +2439,25 @@ private fun ReadOnlyLine(
                     fun mapColumn(offset: Offset): Int {
                         val pastEnd = offset.x > lineRight() + 4f
                         val liveStart = liveSliceStart(liveLine)
-                        return if (pastEnd) {
-                            if (wrapRowRange != null) wrapRowRange.second else liveLine.length
-                        } else {
-                            ((rowLr ?: lineLayouts[lineIndex])?.getOffsetForPosition(offset) ?: 0) + liveStart
+                        if (pastEnd) {
+                            return if (wrapRowRange != null) wrapRowRange.second else liveLine.length
                         }
+                        val lr = rowLr ?: lineLayouts[lineIndex]
+                        val raw = (lr?.getOffsetForPosition(offset) ?: 0) + liveStart
+                        // 行首吸附：getOffsetForPosition 取「最近字符边界」，点在首字符右半边
+                        // 会给出 col 1（落在首字符之后）。用户点行首时希望就是行首，
+                        // 所以整段首字符宽度内都吸附到 0（换行/超长行时即切片首列）。
+                        if (raw == liveStart + 1) {
+                            val firstCharRight =
+                                lr?.let {
+                                    runCatching { it.getCursorRect(liveStart + 1).left }
+                                        .getOrNull()
+                                }
+                            if (firstCharRight != null && offset.x <= firstCharRight) {
+                                return liveStart
+                            }
+                        }
+                        return raw
                     }
                     awaitPointerEventScope {
                         while (true) {
@@ -2612,6 +2637,7 @@ private fun EditorInputLayerHost(
     onEnterKey: (line: Int, column: Int) -> Unit,
     onEditorShortcut: (EditorShortcut) -> Unit,
     onPasteText: (String) -> Unit,
+    onBackspaceAtLineStart: () -> Unit,
     onCopy: () -> Unit,
     onCut: () -> Unit,
     onPaste: () -> Unit,
@@ -2692,6 +2718,7 @@ private fun EditorInputLayerHost(
         onEnterKey = onEnterKey,
         onEditorShortcut = onEditorShortcut,
         onPasteText = onPasteText,
+        onBackspaceAtLineStart = onBackspaceAtLineStart,
         unmirroredSelection = unmirroredSelection,
         onSelectionEdit = onSelectionEdit,
         horizontalScrollState = horizontalScrollState,
@@ -2741,6 +2768,7 @@ private fun InputLayer(
     onEnterKey: (line: Int, column: Int) -> Unit,
     onEditorShortcut: (EditorShortcut) -> Unit = {},
     onPasteText: (String) -> Unit = {},
+    onBackspaceAtLineStart: () -> Unit = {},
     // 选区没镜像进本层（跨行或盒）时为 true：此时本层的缓冲只有当前这一行，
     // 剪贴板与删除/键入必须交回编辑器按整篇文档处理，不能由 BasicTextField 自己动刀。
     unmirroredSelection: Boolean = false,
@@ -2812,10 +2840,19 @@ private fun InputLayer(
     val effectiveUnmirroredSelection =
         unmirroredSelection || (selectionStart != null && selectionWindow == null)
     val windowText = if (winStart == 0 && winEnd == line.length) line else line.substring(winStart, winEnd)
-    val localInitialCol = (cursorColumn - winStart).coerceIn(0, windowText.length)
+    // 行首退格（VS Code：合并到上一行）在 Android IME 上走 deleteSurroundingText(1,0)，
+    // 光标已在 offset 0 时 TextField 视为 no-op，InputTransformation/snapshotFlow 都观察不到。
+    // 这里的做法：仅在此场景把镜像文本改成「空格 + 当前行」，光标落在空格之后。
+    // 退格会真实删掉那个空格，snapshotFlow 据此识别为「行首退格」并转成 BackspaceAtLineStart。
+    // 前缀必须用空格这类独立字符：零宽字符（U+200B 等 Cf 类）会被 IME 当组合符吞掉，导致输入丢字。
+    // 前缀只存在于输入层，视觉文本仍由背后 ReadOnlyLine 绘制。
+    val atLineStart = canAcceptInput && lineIndex > 0 && cursorColumn == 0 && selectionStart == null
+    val markerLen = if (atLineStart) 1 else 0
+    val mirrorText = if (atLineStart) " $windowText" else windowText
+    val localInitialCol = markerLen + (cursorColumn - winStart).coerceIn(0, windowText.length)
     val textFieldState =
         rememberTextFieldState(
-            initialText = windowText,
+            initialText = mirrorText,
             initialSelection = TextRange(localInitialCol),
         )
 
@@ -2829,6 +2866,9 @@ private fun InputLayer(
     val latestOnEditorShortcut by rememberUpdatedState(onEditorShortcut)
     val latestOnNavigationKey by rememberUpdatedState(onNavigationKey)
     val latestOnPasteText by rememberUpdatedState(onPasteText)
+    val latestOnBackspaceAtLineStart by rememberUpdatedState(onBackspaceAtLineStart)
+    val latestMarkerLen by rememberUpdatedState(markerLen)
+    val latestMirrorText by rememberUpdatedState(mirrorText)
     val latestUnmirroredSelection by rememberUpdatedState(effectiveUnmirroredSelection)
     val latestOnSelectionEdit by rememberUpdatedState(onSelectionEdit)
     // 点击映射用「当前窗口/字宽」而非字段内部状态，保证超长行滚到行尾后点击列始终正确（VSCode 行为）
@@ -2839,6 +2879,7 @@ private fun InputLayer(
     val latestCharWidth by rememberUpdatedState(charWidthPx)
     val latestIsSuperLongInput by rememberUpdatedState(isSuperLongInput)
     val latestIsWordWrapState by rememberUpdatedState(isWordWrap)
+    val latestAtLineStart by rememberUpdatedState(atLineStart)
     val latestOnLineLongPress by rememberUpdatedState(onLineLongPress)
     val latestOnSelectionCleared by rememberUpdatedState(onSelectionCleared)
     val latestHasEditorSelection by rememberUpdatedState(
@@ -2854,14 +2895,18 @@ private fun InputLayer(
     // 外部状态（行切换 / 撤销 / Enter 后换行）同步进 TextFieldState；仅文本不一致时覆盖，
     // 避免与 IME 组合态抢 selection。
     // 只读时跳过：该层透明不可见，移动光标再重排 BasicTextField 纯属浪费（卡顿来源）。
-    LaunchedEffect(line, cursorColumn, canAcceptInput, winStart, winEnd) {
+    // key 必须带 lineIndex：连续空行（或内容相同的相邻行）行文本一模一样，
+    // 只按文本做 key 时从第 2 个空行换到第 3 个空行不会触发同步，
+    // 上一行的 `\n` 留在字段里，下一次回车就累积成 2 个换行而被当成「粘贴两行」，
+    // 表现为「连续回车最多建两个空行后卡住」。
+    LaunchedEffect(line, lineIndex, cursorColumn, canAcceptInput, winStart, winEnd, atLineStart) {
         if (!canAcceptInput) return@LaunchedEffect
         appliedWinStart = winStart
         appliedWinEnd = winEnd
-        val col = (cursorColumn - winStart).coerceIn(0, windowText.length)
-        if (textFieldState.text.toString() != windowText) {
+        val col = markerLen + (cursorColumn - winStart).coerceIn(0, windowText.length)
+        if (textFieldState.text.toString() != mirrorText) {
             textFieldState.edit {
-                replace(0, length, windowText)
+                replace(0, length, mirrorText)
                 placeCursorBeforeCharAt(col)
             }
         } else if (textFieldState.selection.collapsed && textFieldState.selection.start != col) {
@@ -2925,14 +2970,25 @@ private fun InputLayer(
             .distinctUntilChanged()
             .collect { (rawNewText, selection) ->
                 if (!acceptInputState) return@collect
+                // 行首标记（空格）被 IME 退格删掉：转成「合并到上一行」。
+                // 判据是「字段文本正好等于去掉前缀后的窗口文本」——说明唯一变化就是前缀被删，
+                // 而不是用户改了正文。这样空行、用户补空格等情形都不会误判。
+                if (latestMarkerLen == 1 && rawNewText == latestWindowText) {
+                    latestOnBackspaceAtLineStart()
+                    return@collect
+                }
                 // 自己镜像进字段的选区回声：不是用户移动光标，上报会把选区锚点冲掉
-                if (rawNewText == latestWindowText && selection == mirroredSelection) return@collect
+                if (rawNewText == latestMirrorText && selection == mirroredSelection) return@collect
+                // 行首标记只是输入层占位，拼回全局行前必须剥掉，否则会把空格写进文档。
+                val plainText =
+                    if (latestMarkerLen == 1 && rawNewText.startsWith(' ')) rawNewText.substring(1)
+                    else rawNewText
                 // 始终按「已写入字段的窗口边界」拼回全局行，避免捕获首帧 isSuperLongInput
                 // 导致窗口模式/整行模式不一致。边界与字段文本同源，首帧也不会截断。
                 val start = appliedWinStart.coerceIn(0, currentLine.length)
                 val end = appliedWinEnd.coerceIn(start, currentLine.length)
                 val newText =
-                    currentLine.substring(0, start) + rawNewText +
+                    currentLine.substring(0, start) + plainText +
                         currentLine.substring(end)
                 val nlIndex = newText.indexOf('\n')
                 if (nlIndex >= 0) {
@@ -2965,9 +3021,10 @@ private fun InputLayer(
                 // 初次加载时初始 selection 即钳位值），不是用户移动光标，跳过上报。
                 // 否则误报的 onCursorChange 会触发 reveal 的 scrollTo，经 MutatorMutex 取消
                 // 正在进行的滚动，导致滚不到真正行尾、光标列漂移。
+                val expectedLocalCaret =
+                    latestMarkerLen + (currentCol - appliedWinStart).coerceIn(0, plainText.length)
                 if (newText == currentLine &&
-                    selection.start ==
-                    (currentCol - appliedWinStart).coerceIn(0, rawNewText.length) &&
+                    selection.start == expectedLocalCaret &&
                     selection.collapsed
                 ) {
                     return@collect
@@ -2980,7 +3037,7 @@ private fun InputLayer(
                 // selection 为窗口内局部坐标，需 + appliedWinStart 还原为全局列再回传，
                 // 否则超长行 winStart>0 时把局部列误当全局列，引发光标漂移与级联误改。
                 val localCaret = if (selection.collapsed) selection.start else selection.max
-                val globalCaret = localCaret + appliedWinStart
+                val globalCaret = localCaret - latestMarkerLen + appliedWinStart
                 // 仅「文本未变、选区被收成插入符」时清编辑器选区（点按收起）。
                 // 键入替换选区时文本已变，交给 ViewModel 的 LineContentChanged 处理，
                 // 这里先 clear 会把「覆盖选区」误打成「在旧光标插入」。
@@ -3034,18 +3091,36 @@ private fun InputLayer(
                 // 超长行：拦截点击，按「点击坐标 + 当前窗口起点」直接算全局列（与 ReadOnlyLine 同源），
                 // 不依赖 BasicTextField 内部按字段文本映射 —— 否则滚到行尾后若字段窗口未及时跟上，
                 // 内部映射会把列算到窗口首部，光标回行首、reveal 把窗口滚回第一屏（VSCode 点击定位）。
-                // 普通行不拦截，维持 BasicTextField 内部点击置光标。
+                // 行首态（镜像文本前置了标记字符）同样要拦截：内部映射会把标记算进列里，
+                // 导致点击落点比视觉偏 1 字符。
+                // 行首吸附区（首字符宽度内）也必须自己接管：BasicTextField 内部按「最近字符边界」
+                // 映射，点在首字符右半边会落到「首字符之后」（col 1），用户想点行首却总差一位。
+                // 其余位置仍交给 BasicTextField 内部映射，保持原生点击手感。
                 // key 只用 isSuperLongInput：滚动会频繁改 winStart，若把 winStart 放进 key，
                 // pointerInput 会随每次滚动帧重启，拖拽/惯性中点击被取消落空 → 落到字段内部映射，
                 // 又回到「按陈旧窗口算列 → 回行首 → 滚回第一屏」的 bug。
                 .pointerInput(isSuperLongInput) {
-                    if (!latestIsSuperLongInput) return@pointerInput
                     // 自定义点击检测（不用 detectTapGestures）：其 awaitFirstDown 默认
                     // requireUnconsumed=true，而测试环境注入的 down 天然带 consumed 标记，
                     // 导致点击无法被检测；真机上下层事件未消费时二者等价。
                     awaitPointerEventScope {
                         while (true) {
                             val down = awaitFirstDown(requireUnconsumed = false)
+                            val cellWidth = latestCharWidth
+                            val nearLineStart =
+                                cellWidth > 0f && down.position.x < cellWidth * 1.5f
+                            if (!latestIsSuperLongInput && !latestAtLineStart && !nearLineStart) {
+                                // 不接管这次手势：一个事件都不消费，等它自己结束，
+                                // 让 BasicTextField 按原样处理点击（保持原生的落点行为）。
+                                var stillPressed = true
+                                while (stillPressed) {
+                                    val event = awaitPointerEvent()
+                                    val change =
+                                        event.changes.firstOrNull { it.id == down.id } ?: break
+                                    stillPressed = change.pressed
+                                }
+                                continue
+                            }
                             down.consume()
                             val downPos = down.position
                             var cancelled = false
@@ -3072,6 +3147,11 @@ private fun InputLayer(
                                                     .toInt()
                                                     .coerceIn(0, latestWindowTextLen)
                                             val globalCol = localCol + latestWinStart
+                                            // 字段内偏移要算上行首标记占位：标记只存在于输入层，
+                                            // 视觉坐标不含它，写回字段时必须补上。
+                                            val fieldCol =
+                                                (globalCol - appliedWinStart + latestMarkerLen)
+                                                    .coerceIn(0, textFieldState.text.length)
                                             // 先保证字段窗口与当前滚动窗口一致（防滚到行尾后
                                             // 字段还停在旧窗口，导致 caret 越界钳到窗口尾、
                                             // snapshotFlow 按旧 appliedWinStart 镜像误判）。
@@ -3079,18 +3159,12 @@ private fun InputLayer(
                                                 appliedWinStart = latestWinStart
                                                 appliedWinEnd = latestWinEnd
                                                 textFieldState.edit {
-                                                    replace(0, length, latestWindowText)
-                                                    placeCursorBeforeCharAt(
-                                                        (globalCol - appliedWinStart)
-                                                            .coerceIn(0, length),
-                                                    )
+                                                    replace(0, length, latestMirrorText)
+                                                    placeCursorBeforeCharAt(fieldCol)
                                                 }
                                             } else {
                                                 textFieldState.edit {
-                                                    placeCursorBeforeCharAt(
-                                                        (globalCol - appliedWinStart)
-                                                            .coerceIn(0, length),
-                                                    )
+                                                    placeCursorBeforeCharAt(fieldCol)
                                                 }
                                             }
                                             // 本层盖住当前行：点按必须清选区，否则浮动菜单不消失
@@ -3200,14 +3274,35 @@ private fun InputLayer(
                             )
                         if (edit != null) return@onPreviewKeyEvent latestOnSelectionEdit(edit)
                     }
+                    // 退格且光标在逻辑行首：按 VS Code 行为把本行接到上一行末尾。
+                    // 不接管的话，BasicTextField 在 offset 0 无字符可删，退格静默失效。
+                    // Key.Delete 一起覆盖：各家输入法（尤其 MIUI）把软键盘退格发成
+                    // KEYCODE_FORWARD_DEL，Compose 映射成 Key.Delete 而非 Key.Backspace。
+                    // 行首判定用输入层自己的 selection（减去行首标记占位），不依赖外部光标镜像：
+                    // 外部 cursor holder 与 state.cursorColumn 存在去抖不同步，用它们会误判。
+                    val caretAtLineStart =
+                        textFieldState.selection.collapsed &&
+                            textFieldState.selection.start == latestMarkerLen
+                    if ((keyEvent.key == Key.Backspace || keyEvent.key == Key.Delete) &&
+                        !keyEvent.isCtrlPressed &&
+                        !keyEvent.isMetaPressed &&
+                        !keyEvent.isAltPressed &&
+                        caretAtLineStart &&
+                        selectionStart == null &&
+                        currentLineIndex > 0
+                    ) {
+                        latestOnBackspaceAtLineStart()
+                        return@onPreviewKeyEvent true
+                    }
                     if (keyEvent.key == Key.Tab) {
                         val spaces = " ".repeat(tabSize)
+                        val caretOffset = latestMarkerLen
                         textFieldState.edit {
-                            val start = selection.min
-                            val end = selection.max
+                            val start = (selection.min - caretOffset).coerceAtLeast(0)
+                            val end = (selection.max - caretOffset).coerceAtLeast(0)
                             replace(start, end, spaces)
                             placeCursorBeforeCharAt(
-                                start + spaces.length,
+                                start + spaces.length + caretOffset,
                             )
                         }
                         true

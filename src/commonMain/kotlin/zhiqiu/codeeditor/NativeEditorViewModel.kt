@@ -354,6 +354,10 @@ class NativeEditorViewModel(
                 handleCutCurrentLine()
             }
 
+            is NativeEditorEvent.BackspaceAtLineStart -> {
+                handleBackspaceAtLineStart()
+            }
+
             is NativeEditorEvent.PasteSelection -> {
                 handlePasteSelection(event.text)
             }
@@ -1396,12 +1400,35 @@ class NativeEditorViewModel(
                 )
                 val restored = currentState.content.getLines()
                 val delta = EditDelta.replaceLines(op.targetStart, op.newLines.size, op.oldLines.size)
+                // 撤销后光标回到操作前的位置（合并行等操作会记录）；
+                // 未记录时沿用状态里的当前光标，避免光标被甩到无关行。
+                val undoLine =
+                    if (op.undoCursorLine >= 0) {
+                        op.undoCursorLine
+                    } else {
+                        currentState.cursorLine
+                    }
+                val undoColumn =
+                    if (op.undoCursorLine >= 0) {
+                        op.undoCursorColumn.coerceIn(
+                            0,
+                            restored.getOrNull(undoLine)?.length ?: 0,
+                        )
+                    } else {
+                        currentState.cursorColumn
+                    }
                 _state.value =
                     currentState.copy(
                         isModified = isModifiedAgainst(currentState),
                         highlightVersion = currentState.highlightVersion + 1,
                         contentRevision = currentState.contentRevision + 1,
                         lastEditDelta = delta,
+                        cursorLine = undoLine.coerceIn(
+                            0,
+                            (restored.size - 1).coerceAtLeast(0),
+                        ),
+                        cursorColumn = undoColumn,
+                        selection = null,
                         canUndo = undoManager.canUndo,
                         canRedo = undoManager.canRedo,
                     )
@@ -2229,6 +2256,51 @@ class NativeEditorViewModel(
         // 白白压一条撤销记录并把文档标脏。
         val sel = _state.value.selection?.takeIf { it.isNotEmpty() } ?: return
         applyReplacement("", sel)
+    }
+
+    /**
+     * 行首退格（VS Code 行为）：把当前行拼到上一行末尾，删除两行之间的换行。
+     * 走 Block 撤销链路，一次撤销即可恢复原来的两行。
+     */
+    private fun handleBackspaceAtLineStart() {
+        val currentState = _state.value
+        val line = cursor.line.coerceIn(0, (currentState.content.lineCount - 1).coerceAtLeast(0))
+        if (line <= 0) return
+        val prevLine = currentState.content.getLine(line - 1)
+        val curLine = currentState.content.getLine(line)
+        val merged = prevLine + curLine
+        val oldSlice = listOf(prevLine, curLine)
+        val newSlice = listOf(merged)
+
+        spliceLinesInPlace(currentState.content, line - 1, oldSlice.size, newSlice)
+        val splicedLines = currentState.content.getLines()
+        val delta = EditDelta.replaceLines(line - 1, oldSlice.size, newSlice.size)
+        undoManager.push(
+            EditOp.Block(
+                oldLines = oldSlice,
+                newLines = newSlice,
+                targetStart = line - 1,
+                replaceCount = oldSlice.size,
+                // 撤销后光标回到操作前（当前行行首），而不是停在合并点
+                undoCursorLine = line,
+                undoCursorColumn = cursor.column,
+            )
+        )
+        selectionGestureAnchor = null
+        _state.value =
+            currentState.copy(
+                cursorLine = line - 1,
+                cursorColumn = prevLine.length,
+                isModified = true,
+                selection = null,
+                highlightVersion = currentState.highlightVersion + 1,
+                contentRevision = currentState.contentRevision + 1,
+                lastEditDelta = delta,
+                canUndo = undoManager.canUndo,
+                canRedo = undoManager.canRedo,
+            )
+        afterEditDelta(delta, splicedLines)
+        syncCursorFromState()
     }
 
     private fun handleCutCurrentLine() {

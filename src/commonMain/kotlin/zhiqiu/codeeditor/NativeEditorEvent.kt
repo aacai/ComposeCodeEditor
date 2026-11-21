@@ -168,6 +168,9 @@ sealed interface NativeEditorEvent {
 
     data object CutCurrentLine : NativeEditorEvent
 
+    /** 行首退格：把当前行接到上一行末尾（VS Code 默认行为）。第一行/无上一行时忽略。 */
+    data object BackspaceAtLineStart : NativeEditorEvent
+
     data class PasteSelection(
         val text: String,
     ) : NativeEditorEvent
@@ -199,5 +202,6 @@ fun EditorShortcut.toEditorEvent(): NativeEditorEvent? =
         EditorShortcut.Close -> NativeEditorEvent.DismissOverlay
         EditorShortcut.Format -> NativeEditorEvent.FormatDocument
         EditorShortcut.DeleteSelection -> NativeEditorEvent.DeleteSelection
+        EditorShortcut.BackspaceAtLineStart -> NativeEditorEvent.BackspaceAtLineStart
         EditorShortcut.GoToLine -> null
     }

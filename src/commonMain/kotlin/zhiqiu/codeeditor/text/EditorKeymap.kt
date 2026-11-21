@@ -16,6 +16,9 @@ enum class EditorShortcut {
 
     /** 删除选区内容（Backspace/Delete）。剪切与删除对文档做的是同一件事，区别只在要不要先写剪贴板。 */
     DeleteSelection,
+
+    /** 行首退格：当前行接到上一行末尾（VS Code 默认）。 */
+    BackspaceAtLineStart,
 }
 
 /** 输入层镜像不到的选区（跨行、盒）上的编辑按键。 */
