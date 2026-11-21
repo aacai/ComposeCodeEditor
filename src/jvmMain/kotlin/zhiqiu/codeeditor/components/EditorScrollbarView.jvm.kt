@@ -6,10 +6,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import zhiqiu.applewidgets.kmp.oink.theme.OinkTheme
 
 @Composable
 internal actual fun ScrollbarView(
@@ -25,8 +25,8 @@ internal actual fun ScrollbarView(
             thickness = 9.dp,
             shape = RoundedCornerShape(4.5.dp),
             hoverDurationMillis = 120,
-            unhoverColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.22f),
-            hoverColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+            unhoverColor = OinkTheme.colors.scrollbar,
+            hoverColor = OinkTheme.colors.scrollbarHover,
         ),
         interactionSource = interactionSource,
     )

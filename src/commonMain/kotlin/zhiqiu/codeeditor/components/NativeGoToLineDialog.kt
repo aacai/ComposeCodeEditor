@@ -8,8 +8,6 @@ import org.jetbrains.compose.resources.stringResource
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,6 +17,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import zhiqiu.applewidgets.kmp.basic.Text
+import zhiqiu.applewidgets.kmp.basic.TextField
+import zhiqiu.applewidgets.kmp.oink.theme.OinkTheme
 
 /**
  * 跳转行对话框：输入 1..[lineCount] 的合法行号，确认后回调 [onConfirm]。
@@ -54,26 +55,23 @@ fun NativeGoToLineDialog(
         },
     ) {
         androidx.compose.foundation.layout.Column(modifier = Modifier.fillMaxWidth()) {
-            OutlinedTextField(
+            TextField(
                 value = text,
                 onValueChange = {
                     text = it
                     error = null
                 },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = {
-                    Text(hint, fontSize = 13.sp)
-                },
+                placeholder = hint,
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                isError = error != null,
-                textStyle = androidx.compose.material3.MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
+                textStyle = OinkTheme.textStyles.caption.copy(fontSize = 13.sp),
             )
             if (error != null) {
                 Text(
                     text = error!!,
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.error,
-                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                    color = OinkTheme.colors.danger,
+                    style = OinkTheme.textStyles.micro,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 4.dp),
                 )

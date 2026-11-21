@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -21,6 +20,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import zhiqiu.applewidgets.kmp.oink.theme.OinkTheme
 import kotlin.math.roundToInt
 
 /**
@@ -60,7 +60,7 @@ internal actual fun HorizontalScrollbar(
                         .height(8.dp)
                         .clip(androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
                         .background(
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                            OinkTheme.colors.scrollbar,
                         ).pointerInput(Unit) {
                             detectDragGestures { change, dragAmount ->
                                 change.consume()

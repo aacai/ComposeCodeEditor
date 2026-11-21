@@ -1,15 +1,15 @@
 package zhiqiu.codeeditor.render
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.graphics.Color
+import zhiqiu.applewidgets.kmp.oink.theme.OinkTheme
 import zhiqiu.codeeditor.highlight.Token
 import zhiqiu.codeeditor.highlight.TokenType
 
-/** 依据 Material 背景色的红色通道粗略判断当前是否为深色主题（与编辑器明暗主题联动）。 */
+/** 依据 Oink 背景色判断当前是否为深色主题（与编辑器明暗主题联动）。 */
 @Composable
 @ReadOnlyComposable
-fun isDarkTheme(): Boolean = MaterialTheme.colorScheme.background.red < 0.5f
+fun isDarkTheme(): Boolean = OinkTheme.colors.isDark
 
 data class EditorTheme(
     val background: Color,

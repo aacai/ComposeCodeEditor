@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -23,6 +22,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import zhiqiu.applewidgets.kmp.oink.theme.OinkTheme
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
@@ -92,9 +92,8 @@ internal actual fun ScrollbarView(
                                 .height(with(density) { thumbHeight.toDp() })
                                 .clip(RoundedCornerShape(6.dp))
                                 .background(
-                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                                                alpha = if (isDragging) 0.7f else 0.45f
-                                        )
+                                        if (isDragging) OinkTheme.colors.scrollbarHover
+                                        else OinkTheme.colors.scrollbar
                                 )
                                 .pointerInput(
                                         listState,

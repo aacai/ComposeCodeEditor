@@ -16,15 +16,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import zhiqiu.applewidgets.kmp.basic.Surface
+import zhiqiu.applewidgets.kmp.basic.SurfaceDefaults
+import zhiqiu.applewidgets.kmp.basic.Text
+import zhiqiu.applewidgets.kmp.oink.theme.OinkTheme
 import zhiqiu.codeeditor.NativeEditorState
 
 /**
@@ -41,8 +42,8 @@ fun NativeEditorStatusBar(
     onFontFamilyClick: (() -> Unit)? = null,
 ) {
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        tonalElevation = 2.dp,
+        shape = RoundedCornerShape(8.dp),
+        colors = SurfaceDefaults.surfaceColors(containerColor = OinkTheme.colors.card),
         modifier = modifier,
     ) {
         Row(
@@ -76,9 +77,9 @@ fun NativeEditorStatusBar(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     stringResource(Res.string.editor_read_only),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = OinkTheme.textStyles.micro,
                     fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.error,
+                    color = OinkTheme.colors.danger,
                 )
             }
         }
@@ -92,9 +93,9 @@ private fun StatusItem(
 ) {
     Text(
         text = text,
-        style = MaterialTheme.typography.labelSmall,
+        style = OinkTheme.textStyles.micro,
         fontSize = 11.sp,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        color = OinkTheme.colors.text2,
         modifier =
             if (onClick == null) {
                 Modifier

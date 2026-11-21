@@ -16,18 +16,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +30,17 @@ import zhiqiu.codeeditor.generated.resources.Res
 import zhiqiu.codeeditor.generated.resources.close
 import zhiqiu.codeeditor.generated.resources.translate_title
 import org.jetbrains.compose.resources.stringResource
+import zhiqiu.applewidgets.kmp.basic.Button
+import zhiqiu.applewidgets.kmp.basic.ButtonStyle
+import zhiqiu.applewidgets.kmp.basic.IconButton
+import zhiqiu.applewidgets.kmp.basic.ProgressView
+import zhiqiu.applewidgets.kmp.basic.Separator
+import zhiqiu.applewidgets.kmp.basic.Text
+import zhiqiu.applewidgets.kmp.basic.TextField
+import zhiqiu.applewidgets.kmp.oink.basic.OinkIcon
+import zhiqiu.applewidgets.kmp.oink.basic.OinkIcons
+import zhiqiu.applewidgets.kmp.oink.theme.OinkTheme
+import zhiqiu.applewidgets.kmp.theme.LocalContentColor
 
 val translateLanguages = listOf(
     "zh-CN" to "中文",
@@ -96,9 +95,11 @@ fun TranslateResultDialog(
         onDismiss = onDismiss,
         title = { DialogTitle(stringResource(Res.string.translate_title)) },
         buttons = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(Res.string.close))
-            }
+            Button(
+                text = stringResource(Res.string.close),
+                onClick = onDismiss,
+                style = ButtonStyle.Plain,
+            )
         }
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -113,9 +114,10 @@ fun TranslateResultDialog(
                 )
 
                 IconButton(onClick = onSwapLangs) {
-                    Icon(
+                    OinkIcon(
                         Icons.Default.SwapHoriz,
-                        contentDescription = "swap languages"
+                        contentDescription = "swap languages",
+                        tint = LocalContentColor.current,
                     )
                 }
 
@@ -134,18 +136,19 @@ fun TranslateResultDialog(
             ) {
                 Text(
                     text = sourceText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = OinkTheme.textStyles.body,
+                    color = OinkTheme.colors.text2,
                     modifier = Modifier.weight(1f)
                 )
                 IconButton(
                     onClick = { clipboardManager.setText(AnnotatedString(sourceText)) },
-                    modifier = Modifier.size(32.dp)
+                    size = 32.dp
                 ) {
-                    Icon(
+                    OinkIcon(
                         Icons.Default.ContentCopy,
                         contentDescription = "copy source",
-                        modifier = Modifier.size(16.dp)
+                        tint = LocalContentColor.current,
+                        size = 16.dp
                     )
                 }
             }
@@ -158,17 +161,14 @@ fun TranslateResultDialog(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.height(24.dp).width(24.dp),
-                            strokeWidth = 2.dp
-                        )
+                        ProgressView(size = 24.dp, strokeWidth = 2.dp)
                     }
                 }
                 error != null -> {
                     Text(
                         text = error,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error
+                        style = OinkTheme.textStyles.body,
+                        color = OinkTheme.colors.danger
                     )
                 }
                 translatedResult != null -> {
@@ -178,18 +178,19 @@ fun TranslateResultDialog(
                     ) {
                         Text(
                             text = translatedResult,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary,
+                            style = OinkTheme.textStyles.body,
+                            color = OinkTheme.colors.accent,
                             modifier = Modifier.weight(1f)
                         )
                         IconButton(
                             onClick = { clipboardManager.setText(AnnotatedString(translatedResult)) },
-                            modifier = Modifier.size(32.dp)
+                            size = 32.dp
                         ) {
-                            Icon(
+                            OinkIcon(
                                 Icons.Default.ContentCopy,
                                 contentDescription = "copy result",
-                                modifier = Modifier.size(16.dp)
+                                tint = LocalContentColor.current,
+                                size = 16.dp
                             )
                         }
                     }
@@ -197,82 +198,32 @@ fun TranslateResultDialog(
             }
 
             Spacer(modifier = Modifier.height(12.dp))
-            HorizontalDivider()
+            Separator(startIndent = 0.dp)
             Spacer(modifier = Modifier.height(8.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                TextButton(
+                Button(
+                    text = "aB → a B",
                     onClick = { onSplitText(splitCamelCase(sourceText)) },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("aB → a B")
-                }
-                TextButton(
+                    modifier = Modifier.weight(1f),
+                    style = ButtonStyle.Plain,
+                )
+                Button(
+                    text = "a_b → a b",
                     onClick = { onSplitText(splitSnakeCase(sourceText)) },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("a_b → a b")
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LanguageDropdown(
-    selectedCode: String,
-    onSelected: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    if (isDesktopPlatform()) {
-        TranslateLanguagePicker(
-            selectedCode = selectedCode,
-            onSelected = onSelected,
-            modifier = modifier
-        )
-        return
-    }
-
-    var expanded by remember { mutableStateOf(false) }
-    val displayName = translateLanguages.find { it.first == selectedCode }?.second ?: selectedCode
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = !expanded },
-        modifier = modifier
-    ) {
-        OutlinedTextField(
-            value = displayName,
-            onValueChange = {},
-            readOnly = true,
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            translateLanguages.forEach { (code, name) ->
-                DropdownMenuItem(
-                    text = { Text(name) },
-                    onClick = {
-                        onSelected(code)
-                        expanded = false
-                    }
+                    modifier = Modifier.weight(1f),
+                    style = ButtonStyle.Plain,
                 )
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TranslateLanguagePicker(
+private fun LanguageDropdown(
     selectedCode: String,
     onSelected: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -280,15 +231,22 @@ private fun TranslateLanguagePicker(
     var showPicker by remember { mutableStateOf(false) }
     val displayName = translateLanguages.find { it.first == selectedCode }?.second ?: selectedCode
 
-    OutlinedTextField(
-        value = displayName,
-        onValueChange = {},
-        readOnly = true,
-        modifier = modifier.clickable { showPicker = true },
-        trailingIcon = {
-            ExposedDropdownMenuDefaults.TrailingIcon(expanded = showPicker)
-        }
-    )
+    Box(modifier = modifier.clickable { showPicker = true }) {
+        TextField(
+            value = displayName,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier.fillMaxWidth(),
+            textStyle = OinkTheme.textStyles.body,
+        )
+        OinkIcon(
+            imageVector = OinkIcons.ChevronDown,
+            contentDescription = null,
+            tint = OinkTheme.colors.text2,
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 8.dp),
+            size = 16.dp,
+        )
+    }
 
     if (showPicker) {
         AppDialog(
@@ -301,7 +259,7 @@ private fun TranslateLanguagePicker(
                 translateLanguages.forEach { (code, name) ->
                     Text(
                         text = name,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = OinkTheme.textStyles.body,
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
@@ -310,9 +268,9 @@ private fun TranslateLanguagePicker(
                             }
                             .padding(vertical = 10.dp),
                         color = if (code == selectedCode) {
-                            MaterialTheme.colorScheme.primary
+                            OinkTheme.colors.accent
                         } else {
-                            MaterialTheme.colorScheme.onSurface
+                            OinkTheme.colors.text
                         }
                     )
                 }

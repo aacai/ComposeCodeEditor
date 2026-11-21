@@ -25,15 +25,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -80,6 +81,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -99,6 +101,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import zhiqiu.applewidgets.kmp.oink.basic.OinkIcon
 import zhiqiu.codeeditor.generated.resources.Res
 import zhiqiu.codeeditor.generated.resources.editor_translate
 import kotlinx.coroutines.delay
@@ -494,9 +497,8 @@ fun NativeCodeEditor(
                 if (hasMatch) 0f else 1f
             }
         }
-    // 超长行输入层：贴在内容区左缘（不随横向滚动偏移）。其编辑窗口=可见切片，随滚动的是窗口文本
-    // 而非整层位置；否则滚到行尾后 InputLayer 覆盖区整块移出视口，点击无法映射到正确列（VSCode 行为：
-    // 可见即可点、点击即定位到所点列）。普通行仍整体随横向滚动偏移（窗口=整行文本）。
+    // 超长行输入层：宿主层贴在内容区左缘（不随横向滚动偏移）；切片与背后 ReadOnlyLine 的对齐
+    // 由 InputLayer 内部按 winStart*cw - scroll 微调。普通行仍整体随横向滚动偏移。
     val inputLayerOffsetX =
         remember {
             derivedStateOf {
@@ -965,13 +967,15 @@ fun NativeCodeEditor(
                             }
                             if (showLineNumbers) {
                                 if (isFirstRow) {
-                                    Text(
+                                    BasicText(
                                         text = (logicalIndex + 1).toString(),
-                                        color = theme.lineNumber,
-                                        fontSize = state.fontSize.sp,
-                                        fontFamily = codeFont,
-                                        lineHeight = lineHeightDp.value.sp,
-                                        textAlign = TextAlign.End,
+                                        style = TextStyle(
+                                            color = theme.lineNumber,
+                                            fontSize = state.fontSize.sp,
+                                            fontFamily = codeFont,
+                                            lineHeight = lineHeightDp.value.sp,
+                                            textAlign = TextAlign.End,
+                                        ),
                                         modifier =
                                             Modifier
                                                 .weight(1f)
@@ -1005,7 +1009,7 @@ fun NativeCodeEditor(
                                 ) {
                                     if (canFold) {
                                         // 对齐 Cursor/VS Code：收起 ▶ / 展开 ▼；行号仍只画可见逻辑行
-                                        Icon(
+                                        OinkIcon(
                                             imageVector = if (isCollapsed) {
                                                 Icons.AutoMirrored.Filled.KeyboardArrowRight
                                             } else {
@@ -1013,7 +1017,7 @@ fun NativeCodeEditor(
                                             },
                                             contentDescription = if (isCollapsed) "Expand" else "Collapse",
                                             tint = theme.lineNumber,
-                                            modifier = Modifier.size(14.dp),
+                                            size = 14.dp,
                                         )
                                     }
                                 }
@@ -1720,15 +1724,20 @@ val (rawLine, _) =
                                             onCursorChange(line, col)
                                         },
                                         onRequestEditFocus = requestEditFocus,
-                                        // 仅相交行携带选区，缩小拖选时无关行的脏区
+                                        // 仅相交行携带选区，缩小拖选时无关行的脏区；
+                                        // 全局是否有选区另传，避免点其它行时漏清选区/菜单
                                         selection =
                                             displaySelection?.takeIf { it.coversLine(logicalIndex) },
+                                        editorHasSelection =
+                                            displaySelection?.normalize()?.isNotEmpty() == true,
                                         onSelectionStarted =
                                         onSelectionStarted,
                                         onSelectionUpdated =
                                         onSelectionUpdated,
-                                        onSelectionCleared =
-                                        onSelectionCleared,
+                                        onSelectionCleared = {
+                                            pasteMenuCaret = null
+                                            onSelectionCleared()
+                                        },
                                         onSelectWord = { line, col ->
                                             pasteMenuCaret = null
                                             onSelectWord(line, col)
@@ -1871,7 +1880,10 @@ val (rawLine, _) =
                             onSelectionStarted = onSelectionStarted,
                             onSelectionUpdated = onSelectionUpdated,
                             onSelectionBoxChanged = onSelectionBoxChanged,
-                            onSelectionCleared = onSelectionCleared,
+                            onSelectionCleared = {
+                                pasteMenuCaret = null
+                                onSelectionCleared()
+                            },
                             visColsProvider = { wrapRowsLayoutState.visCols },
                             onLineLongPress = { line, col ->
                                 val text = lines.getOrNull(line).orEmpty()
@@ -2171,6 +2183,8 @@ private fun ReadOnlyLine(
     onCursorChange: (line: Int, column: Int) -> Unit,
     onRequestEditFocus: () -> Unit,
     selection: SelectionRange?,
+    // 编辑器任意处是否有非空选区（可与本行 selection 不同：本行参数只服务相交高亮）
+    editorHasSelection: Boolean = false,
     onSelectionStarted: (line: Int, col: Int) -> Unit,
     onSelectionUpdated: (line: Int, col: Int) -> Unit,
     onSelectionCleared: () -> Unit,
@@ -2205,6 +2219,10 @@ private fun ReadOnlyLine(
     val latestCharWidth by rememberUpdatedState(charWidthPx)
     val latestViewportWidthPx by rememberUpdatedState(viewportWidthPx)
     val latestCursorColumn by rememberUpdatedState(cursorColumn)
+    // 全局选区变化时，未相交行的 pointerInput 不会因 key 重启，必须用最新值判断是否清选区
+    val latestEditorHasSelection by rememberUpdatedState(editorHasSelection || selection != null)
+    val latestOnSelectionCleared by rememberUpdatedState(onSelectionCleared)
+    val latestOnCursorChange by rememberUpdatedState(onCursorChange)
     // 换行视觉行切片起点固定（无横向滚动），非换行超长行用实时滚动重算切片起点
     fun liveSliceStart(line: String): Int {
         if (wrapRowRange != null) return wrapRowRange.first
@@ -2317,7 +2335,7 @@ private fun ReadOnlyLine(
     // Compose Text 从非空变为空时底层字形图层常不失效，留下第一行视觉残留；
     // 再输入后文本非空才会重绘。用 key 在空/非空切换时拆掉旧 Text 节点。
     key(line.isEmpty()) {
-        Text(
+        BasicText(
             text =
                 if (wrapRowRange != null || isSuperLong) {
                     val safeStart = sliceStart.coerceIn(0, annotatedLine.length)
@@ -2326,10 +2344,12 @@ private fun ReadOnlyLine(
                 } else {
                     annotatedLine
                 },
-            fontSize = fontSize.sp,
-            fontFamily = LocalEditorFont.current,
-            lineHeight = lineHeightSp,
-            color = theme.foreground,
+            style = TextStyle(
+                fontSize = fontSize.sp,
+                fontFamily = LocalEditorFont.current,
+                lineHeight = lineHeightSp,
+                color = theme.foreground,
+            ),
             // 换行视觉行：行切片已按 visCols 划好，不再内部折行（softWrap=false 防宽字符再折溢出行高）
             softWrap = isWordWrap && wrapRowRange == null,
             overflow = TextOverflow.Clip,
@@ -2492,15 +2512,14 @@ private fun ReadOnlyLine(
                                 }
                             }
                             // 单击：点击文本右侧空白区定位到行末（FR-1）
+                            // 任意行点按都收起编辑器选区——本行 selection 只表示相交高亮，
+                            // 点第 2/3 行时 selection==null，不能漏清全局选区与浮动菜单。
                             val offset = firstUpPos
                             val column = mapColumn(offset)
-                            if (selection != null) {
-                                // 点按收起选区并定位光标（Android 习惯）
-                                onSelectionCleared()
-                                onCursorChange(lineIndex, column)
-                            } else {
-                                onCursorChange(lineIndex, column)
+                            if (latestEditorHasSelection) {
+                                latestOnSelectionCleared()
                             }
+                            latestOnCursorChange(lineIndex, column)
                             // 编辑模式下点击行：请求焦点弹出输入法；只读模式仅移动光标
                             if (!isReadOnly) onRequestEditFocus()
                         }
@@ -2532,12 +2551,14 @@ private fun FoldEllipsisBadge(
                 .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
+        BasicText(
             text = "···",
-            color = color.copy(alpha = 0.9f),
-            fontSize = (fontSize * 0.78f).sp,
-            fontFamily = font,
-            letterSpacing = 1.2.sp,
+            style = TextStyle(
+                color = color.copy(alpha = 0.9f),
+                fontSize = (fontSize * 0.78f).sp,
+                fontFamily = font,
+                letterSpacing = 1.2.sp,
+            ),
             maxLines = 1,
         )
     }
@@ -2554,13 +2575,15 @@ private fun ActiveLineNumberText(
     fontSize: TextUnit,
     lineHeight: TextUnit,
 ) {
-    Text(
+    BasicText(
         text = (cursor.line + 1).toString(),
-        color = color,
-        fontSize = fontSize,
-        fontFamily = LocalEditorFont.current,
-        lineHeight = lineHeight,
-        textAlign = TextAlign.End,
+        style = TextStyle(
+            color = color,
+            fontSize = fontSize,
+            fontFamily = LocalEditorFont.current,
+            lineHeight = lineHeight,
+            textAlign = TextAlign.End,
+        ),
         modifier = Modifier.fillMaxWidth().padding(end = 4.dp),
     )
 }
@@ -2678,6 +2701,8 @@ private fun EditorInputLayerHost(
         selectionDragging = selectionDragging,
         onLineLongPress = onLineLongPress,
         onNavigationKey = onNavigationKey,
+        // 有选区时本层仍盖住当前行（alpha=0）；点按/收起选区时必须清掉，否则浮动菜单残留
+        onSelectionCleared = onSelectionCleared,
         modifier = modifier,
     )
 }
@@ -2731,6 +2756,8 @@ private fun InputLayer(
     onNavigationKey: (EditorNavigation) -> Boolean = { false },
     // 换行模式输入层覆盖光标所在视觉行，长按选词由本层代为触发（底层视觉行被遮挡无法接收）。
     onLineLongPress: (line: Int, col: Int) -> Unit = { _, _ -> },
+    // 点按收起选区 / 用户把 BTF 选区折叠成插入符时回调（本层盖住当前行，不能只靠 ReadOnlyLine）
+    onSelectionCleared: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // 超长行窗口化：持久输入层同样只持有光标附近的窗口文本，避免 BasicTextField 一次性 layout
@@ -2773,6 +2800,14 @@ private fun InputLayer(
         }
     val winStart = selectionWindow?.first ?: baseWinStart
     val winEnd = selectionWindow?.second ?: baseWinEnd
+    // 非换行超长行：切片含左侧 margin，宿主层贴视口左缘；这里把窗口左缘对齐到
+    // ReadOnlyLine 的内容坐标（winStart*cw - scroll），否则 BTF 内置水滴与 HandleLayer 差一截 margin。
+    val sliceAlignOffsetX =
+        if (isSuperLongInput && !isWordWrap && charWidthPx > 0f) {
+            winStart * charWidthPx - horizontalScrollState.value.toFloat()
+        } else {
+            0f
+        }
     val canAcceptInput = acceptInput && (selectionStart == null || selectionWindow != null)
     val effectiveUnmirroredSelection =
         unmirroredSelection || (selectionStart != null && selectionWindow == null)
@@ -2805,6 +2840,10 @@ private fun InputLayer(
     val latestIsSuperLongInput by rememberUpdatedState(isSuperLongInput)
     val latestIsWordWrapState by rememberUpdatedState(isWordWrap)
     val latestOnLineLongPress by rememberUpdatedState(onLineLongPress)
+    val latestOnSelectionCleared by rememberUpdatedState(onSelectionCleared)
+    val latestHasEditorSelection by rememberUpdatedState(
+        selectionStart != null || unmirroredSelection,
+    )
     // 实际写入 TextFieldState 的窗口边界。重建全局文本必须与此一致：
     // rememberTextFieldState 的初始文本是 windowText（切片），不是整行。
     // 若 applied 仍按 0..line.length，snapshotFlow 首帧会用切片去拼「整行」，
@@ -2942,12 +2981,33 @@ private fun InputLayer(
                 // 否则超长行 winStart>0 时把局部列误当全局列，引发光标漂移与级联误改。
                 val localCaret = if (selection.collapsed) selection.start else selection.max
                 val globalCaret = localCaret + appliedWinStart
+                // 仅「文本未变、选区被收成插入符」时清编辑器选区（点按收起）。
+                // 键入替换选区时文本已变，交给 ViewModel 的 LineContentChanged 处理，
+                // 这里先 clear 会把「覆盖选区」误打成「在旧光标插入」。
+                if (newText == currentLine &&
+                    selection.collapsed &&
+                    latestHasEditorSelection
+                ) {
+                    latestOnSelectionCleared()
+                }
                 if (globalCaret != currentCol || !selection.collapsed) {
                     latestOnCursorChange(currentLineIndex, globalCaret)
                 }
             }
     }
 
+    // 隐藏 BTF 自带水滴/选区高亮与系统菜单：由 HandleLayer + SystemSelectionToolbar 统一负责
+    val suppressedSelectionColors =
+        remember {
+            TextSelectionColors(
+                handleColor = Color.Transparent,
+                backgroundColor = Color.Transparent,
+            )
+        }
+    CompositionLocalProvider(
+        LocalTextSelectionColors provides suppressedSelectionColors,
+        LocalTextToolbar provides SuppressedTextToolbar,
+    ) {
     BasicTextField(
         state = textFieldState,
         textStyle =
@@ -2967,6 +3027,10 @@ private fun InputLayer(
             ),
         modifier =
             Modifier
+                // 超长行切片对齐：把窗口左缘挪到与 ReadOnlyLine 相同的内容坐标
+                .offset {
+                    IntOffset(sliceAlignOffsetX.roundToInt(), 0)
+                }
                 // 超长行：拦截点击，按「点击坐标 + 当前窗口起点」直接算全局列（与 ReadOnlyLine 同源），
                 // 不依赖 BasicTextField 内部按字段文本映射 —— 否则滚到行尾后若字段窗口未及时跟上，
                 // 内部映射会把列算到窗口首部，光标回行首、reveal 把窗口滚回第一屏（VSCode 点击定位）。
@@ -3001,8 +3065,8 @@ private fun InputLayer(
                                         val offset = downPos
                                         val cw = latestCharWidth
                                         if (cw > 0f) {
-                                            // 点击列 = 可见首列(winStart) + 局部列（与切片同源）。
-                                            // 换行模式下超长行同样走切片窗口，故映射规则一致（VSCode 行为：点哪列落哪列）。
+                                            // 点击列 = 窗口起点(winStart) + 局部列（切片对齐后与
+                                            // ReadOnlyLine/HandleLayer 同源；点哪列落哪列）。
                                             val localCol =
                                                 (offset.x / cw)
                                                     .toInt()
@@ -3028,6 +3092,10 @@ private fun InputLayer(
                                                             .coerceIn(0, length),
                                                     )
                                                 }
+                                            }
+                                            // 本层盖住当前行：点按必须清选区，否则浮动菜单不消失
+                                            if (latestHasEditorSelection) {
+                                                latestOnSelectionCleared()
                                             }
                                             latestOnCursorChange(
                                                 currentLineIndex,
@@ -3156,6 +3224,7 @@ private fun InputLayer(
                     }
                 },
     )
+    } // CompositionLocalProvider(LocalTextSelectionColors / LocalTextToolbar)
 }
 
 /**

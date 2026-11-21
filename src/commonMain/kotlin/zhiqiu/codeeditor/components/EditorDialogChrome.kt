@@ -24,11 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,12 +34,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import kotlinx.coroutines.delay
+import zhiqiu.applewidgets.kmp.basic.Button
+import zhiqiu.applewidgets.kmp.basic.ButtonStyle
+import zhiqiu.applewidgets.kmp.basic.Surface
+import zhiqiu.applewidgets.kmp.basic.SurfaceDefaults
+import zhiqiu.applewidgets.kmp.basic.Text
+import zhiqiu.applewidgets.kmp.theme.LocalContentColor
+import zhiqiu.applewidgets.kmp.oink.theme.OinkTheme
 
 /** 对话框遮罩弹层：淡入+缩放进入，收起后自动退出组合。 */
 @Composable
@@ -123,8 +128,8 @@ private fun AnimatedDialog(
 /** 窄屏（<600dp）用 0.92 宽，其余 0.62。 */
 @Composable
 private fun rememberDialogWidthFraction(): Float {
-    val compact = !currentWindowAdaptiveInfo().windowSizeClass.isWidthAtLeastBreakpoint(600)
-    return if (compact) 0.92f else 0.62f
+    val widthDp = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
+    return if (widthDp < 600.dp) 0.92f else 0.62f
 }
 
 /** 编辑器弹窗骨架：标题 + 可收缩内容区 + 右对齐操作区。 */
@@ -145,10 +150,8 @@ internal fun AppDialog(
         maxWidth = maxWidth,
     ) {
         Surface(
-            shape = MaterialTheme.shapes.extraLarge,
-            tonalElevation = 6.dp,
-            shadowElevation = 8.dp,
-            color = MaterialTheme.colorScheme.surface
+            shape = RoundedCornerShape(20.dp),
+            colors = SurfaceDefaults.surfaceColors(containerColor = OinkTheme.colors.surface),
         ) {
             // 限制最大高度为窗口高度，中部内容可收缩，保证标题与底部按钮始终可见
             BoxWithConstraints {
@@ -178,7 +181,7 @@ internal fun AppDialog(
 internal fun ColumnScope.DialogTitle(text: String) {
     Text(
         text = text,
-        style = MaterialTheme.typography.titleLarge,
+        style = OinkTheme.textStyles.h3,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis
     )
@@ -191,11 +194,11 @@ internal fun RowScope.DialogTextButton(
     isDestructive: Boolean = false,
     enabled: Boolean = true
 ) {
-    TextButton(onClick = onClick, enabled = enabled) {
+    Button(onClick = onClick, enabled = enabled, style = ButtonStyle.Plain) {
         Text(
             text = label,
-            color = if (isDestructive && enabled) MaterialTheme.colorScheme.error
-            else Color.Unspecified
+            color = if (isDestructive && enabled) OinkTheme.colors.danger
+            else LocalContentColor.current
         )
     }
 }

@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,15 +25,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.SyncAlt
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LocalContentColor
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -41,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -57,6 +51,15 @@ import zhiqiu.codeeditor.generated.resources.editor_replace_hint
 import zhiqiu.codeeditor.generated.resources.editor_search_hint
 import zhiqiu.codeeditor.generated.resources.editor_whole_word
 import org.jetbrains.compose.resources.stringResource
+import zhiqiu.applewidgets.kmp.basic.IconButton
+import zhiqiu.applewidgets.kmp.basic.Surface
+import zhiqiu.applewidgets.kmp.basic.SurfaceDefaults
+import zhiqiu.applewidgets.kmp.basic.Text
+import zhiqiu.applewidgets.kmp.basic.TextField
+import zhiqiu.applewidgets.kmp.oink.basic.OinkIcon
+import zhiqiu.applewidgets.kmp.oink.layout.OinkDivider
+import zhiqiu.applewidgets.kmp.oink.theme.OinkTheme
+import zhiqiu.applewidgets.kmp.theme.LocalContentColor
 import zhiqiu.codeeditor.NativeEditorEvent
 import zhiqiu.codeeditor.NativeEditorState
 import zhiqiu.codeeditor.NativeEditorViewModel
@@ -86,11 +89,10 @@ fun NativeSearchReplacePanel(
             modifier = modifier,
     ) {
         Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                tonalElevation = 2.dp,
+                colors = SurfaceDefaults.surfaceColors(containerColor = OinkTheme.colors.raised),
         ) {
             Column(modifier = Modifier.fillMaxWidth().imePadding().navigationBarsPadding()) {
-                HorizontalDivider(thickness = 0.5.dp)
+                OinkDivider()
                 Row(
                         modifier =
                                 Modifier.fillMaxWidth()
@@ -99,9 +101,9 @@ fun NativeSearchReplacePanel(
                 ) {
                     IconButton(
                             onClick = { viewModel.onEvent(NativeEditorEvent.ToggleReplace) },
-                            modifier = Modifier.size(32.dp),
+                            size = 32.dp,
                     ) {
-                        Icon(
+                        OinkIcon(
                                 imageVector =
                                         if (state.isReplaceExpanded) {
                                             Icons.Default.KeyboardArrowDown
@@ -109,22 +111,18 @@ fun NativeSearchReplacePanel(
                                             Icons.AutoMirrored.Filled.KeyboardArrowRight
                                         },
                                 contentDescription = "Toggle replace",
-                                modifier = Modifier.size(18.dp),
+                                tint = LocalContentColor.current,
+                                size = 18.dp,
                         )
                     }
 
-                    OutlinedTextField(
+                    TextField(
                             value = state.searchQuery,
                             onValueChange = {
                                 viewModel.onEvent(NativeEditorEvent.SearchQueryChanged(it))
                             },
                             modifier = Modifier.weight(1f),
-                            placeholder = {
-                                Text(
-                                        stringResource(Res.string.editor_search_hint),
-                                        fontSize = 13.sp
-                                )
-                            },
+                            placeholder = stringResource(Res.string.editor_search_hint),
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                             keyboardActions =
@@ -133,7 +131,7 @@ fun NativeSearchReplacePanel(
                                                 viewModel.onEvent(NativeEditorEvent.SearchNext)
                                             }
                                     ),
-                            textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
+                            textStyle = OinkTheme.textStyles.caption.copy(fontSize = 13.sp),
                     )
 
                     Text(
@@ -143,44 +141,47 @@ fun NativeSearchReplacePanel(
                                     } else {
                                         stringResource(Res.string.editor_no_results)
                                     },
-                            style = MaterialTheme.typography.labelSmall,
+                            style = OinkTheme.textStyles.micro,
                             fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = OinkTheme.colors.text2,
                             modifier = Modifier.padding(horizontal = 4.dp),
                     )
 
                     IconButton(
                             onClick = { viewModel.onEvent(NativeEditorEvent.SearchPrev) },
-                            modifier = Modifier.size(28.dp),
+                            size = 28.dp,
                             enabled = state.searchMatches.isNotEmpty(),
                     ) {
-                        Icon(
+                        OinkIcon(
                                 Icons.Default.KeyboardArrowUp,
                                 contentDescription = "Previous",
-                                modifier = Modifier.size(16.dp)
+                                tint = LocalContentColor.current,
+                                size = 16.dp
                         )
                     }
 
                     IconButton(
                             onClick = { viewModel.onEvent(NativeEditorEvent.SearchNext) },
-                            modifier = Modifier.size(28.dp),
+                            size = 28.dp,
                             enabled = state.searchMatches.isNotEmpty(),
                     ) {
-                        Icon(
+                        OinkIcon(
                                 Icons.Default.KeyboardArrowDown,
                                 contentDescription = "Next",
-                                modifier = Modifier.size(16.dp)
+                                tint = LocalContentColor.current,
+                                size = 16.dp
                         )
                     }
 
                     IconButton(
                             onClick = { viewModel.onEvent(NativeEditorEvent.CloseSearch) },
-                            modifier = Modifier.size(28.dp),
+                            size = 28.dp,
                     ) {
-                        Icon(
+                        OinkIcon(
                                 Icons.Default.Close,
                                 contentDescription = "Close",
-                                modifier = Modifier.size(14.dp)
+                                tint = LocalContentColor.current,
+                                size = 14.dp
                         )
                     }
                 }
@@ -193,9 +194,9 @@ fun NativeSearchReplacePanel(
                 ) {
                     Text(
                             text = stringResource(Res.string.editor_regex_invalid),
-                            style = MaterialTheme.typography.labelSmall,
+                            style = OinkTheme.textStyles.micro,
                             fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.error,
+                            color = OinkTheme.colors.danger,
                             modifier = Modifier.padding(start = 38.dp, bottom = 2.dp),
                     )
                 }
@@ -219,10 +220,12 @@ fun NativeSearchReplacePanel(
                     ) {
                         Text(
                                 "Aa",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Serif,
-                                lineHeight = 14.sp
+                                style = OinkTheme.textStyles.body.copy(
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Serif,
+                                        lineHeight = 14.sp,
+                                )
                         )
                     }
                     Spacer(modifier = Modifier.width(2.dp))
@@ -242,21 +245,21 @@ fun NativeSearchReplacePanel(
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
                                     "ab",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Serif,
-                                    lineHeight = 14.sp
+                                    style = OinkTheme.textStyles.body.copy(
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = FontFamily.Serif,
+                                            lineHeight = 14.sp,
+                                    )
                             )
                             Box(
                                     modifier =
                                             Modifier.background(
                                                             color =
                                                                     if (state.isWholeWord) {
-                                                                        MaterialTheme.colorScheme
-                                                                                .onPrimaryContainer
+                                                                        OinkTheme.colors.accentText
                                                                     } else {
-                                                                        MaterialTheme.colorScheme
-                                                                                .onSurfaceVariant
+                                                                        OinkTheme.colors.text2
                                                                     },
                                                     )
                                                     .size(width = 14.dp, height = 1.5.dp),
@@ -277,10 +280,12 @@ fun NativeSearchReplacePanel(
                     ) {
                         Text(
                                 ".*",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                lineHeight = 14.sp
+                                style = OinkTheme.textStyles.body.copy(
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        lineHeight = 14.sp,
+                                )
                         )
                     }
 
@@ -293,9 +298,9 @@ fun NativeSearchReplacePanel(
                     ) {
                         Text(
                                 text = notificationText,
-                                style = MaterialTheme.typography.labelSmall,
+                                style = OinkTheme.textStyles.micro,
                                 fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = OinkTheme.colors.text2,
                                 modifier = Modifier.padding(end = 4.dp),
                         )
                     }
@@ -314,50 +319,44 @@ fun NativeSearchReplacePanel(
                     ) {
                         Spacer(modifier = Modifier.width(32.dp))
 
-                        OutlinedTextField(
+                        TextField(
                                 value = state.replaceQuery,
                                 onValueChange = {
                                     viewModel.onEvent(NativeEditorEvent.ReplaceQueryChanged(it))
                                 },
                                 modifier = Modifier.weight(1f),
-                                placeholder = {
-                                    Text(
-                                            stringResource(Res.string.editor_replace_hint),
-                                            fontSize = 13.sp
-                                    )
-                                },
+                                placeholder = stringResource(Res.string.editor_replace_hint),
                                 singleLine = true,
-                                textStyle =
-                                        MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
+                                textStyle = OinkTheme.textStyles.caption.copy(fontSize = 13.sp),
                         )
 
                         IconButton(
                                 onClick = { viewModel.onEvent(NativeEditorEvent.ReplaceNext) },
-                                modifier = Modifier.size(32.dp),
+                                size = 32.dp,
                                 enabled = state.searchMatches.isNotEmpty(),
                         ) {
-                            Icon(
+                            OinkIcon(
                                     Icons.Default.SyncAlt,
                                     contentDescription = "Replace",
-                                    modifier = Modifier.size(18.dp)
+                                    tint = LocalContentColor.current,
+                                    size = 18.dp
                             )
                         }
 
                         IconButton(
                                 onClick = { viewModel.onEvent(NativeEditorEvent.ReplaceAll) },
-                                modifier = Modifier.size(32.dp),
+                                size = 32.dp,
                                 enabled = state.searchMatches.isNotEmpty(),
                         ) {
-                            Icon(
+                            OinkIcon(
                                     Icons.Default.SyncAlt,
                                     contentDescription = "Replace all",
-                                    modifier = Modifier.size(18.dp),
-                                    tint =
-                                            if (state.searchMatches.isNotEmpty()) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface.copy(0.38f)
-                                            },
+                                    tint = if (state.searchMatches.isNotEmpty()) {
+                                        OinkTheme.colors.accent
+                                    } else {
+                                        OinkTheme.colors.text2.copy(alpha = 0.38f)
+                                    },
+                                    size = 18.dp,
                             )
                         }
 
@@ -377,20 +376,23 @@ private fun SearchOptionButton(
 ) {
     val containerColor =
             if (selected) {
-                MaterialTheme.colorScheme.primaryContainer
+                OinkTheme.colors.accentSoft
             } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
+                OinkTheme.colors.fill
             }
     val contentColor =
             if (selected) {
-                MaterialTheme.colorScheme.onPrimaryContainer
+                OinkTheme.colors.accentText
             } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
+                OinkTheme.colors.text2
             }
-    IconButton(
-            onClick = onClick,
-            modifier = Modifier.size(28.dp),
-            colors = IconButtonDefaults.iconButtonColors(containerColor = containerColor),
+    Box(
+            modifier = Modifier
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(containerColor)
+                    .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
     ) {
         CompositionLocalProvider(LocalContentColor provides contentColor) {
             Box(contentAlignment = Alignment.Center, content = { content() })
